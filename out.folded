@@ -1,0 +1,93 @@
+hisat-3n-table;Alignment::appendBase;std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_replace_aux 1
+hisat-3n-table;Alignment::parseInfo 2
+hisat-3n-table;Alignment::parseInfo;[libc.so.6] 1
+hisat-3n-table;Alignment::parseInfo;malloc 2
+hisat-3n-table;Alignment::parseInfo;operator new;[libc.so.6];[libc.so.6] 1
+hisat-3n-table;Positions::append 4
+hisat-3n-table;[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2] 1
+hisat-3n-table;[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2];[ld-linux-x86-64.so.2] 2
+hisat-3n-table;[unknown];Positions::append 1504
+hisat-3n-table;[unknown];Positions::append;[libc.so.6] 1588
+hisat-3n-table;[unknown];Positions::append;[libc.so.6];[unknown] 13
+hisat-3n-table;[unknown];Positions::append;[unknown];clock_nanosleep;[libc.so.6];[unknown] 12
+hisat-3n-table;[unknown];Positions::append;__nanosleep 106
+hisat-3n-table;[unknown];Positions::append;__nanosleep;[libc.so.6] 21
+hisat-3n-table;[unknown];Positions::append;__nanosleep;clock_nanosleep 110
+hisat-3n-table;[unknown];Positions::append;__nanosleep;clock_nanosleep;[libc.so.6] 934
+hisat-3n-table;[unknown];Positions::append;__nanosleep;clock_nanosleep;[libc.so.6];[unknown] 264
+hisat-3n-table;[unknown];Positions::append;clock_nanosleep 85
+hisat-3n-table;[unknown];Positions::append;pthread_mutex_lock 2362
+hisat-3n-table;[unknown];Positions::outputFunction 773
+hisat-3n-table;[unknown];Positions::outputFunction;[libc.so.6] 562
+hisat-3n-table;[unknown];Positions::outputFunction;[libc.so.6];[unknown] 22
+hisat-3n-table;[unknown];Positions::outputFunction;[unknown];clock_nanosleep;[libc.so.6];[unknown] 26
+hisat-3n-table;[unknown];Positions::outputFunction;__nanosleep 66
+hisat-3n-table;[unknown];Positions::outputFunction;__nanosleep;[libc.so.6] 11
+hisat-3n-table;[unknown];Positions::outputFunction;__nanosleep;clock_nanosleep 55
+hisat-3n-table;[unknown];Positions::outputFunction;__nanosleep;clock_nanosleep;[libc.so.6] 575
+hisat-3n-table;[unknown];Positions::outputFunction;__nanosleep;clock_nanosleep;[libc.so.6];[unknown] 123
+hisat-3n-table;[unknown];Positions::outputFunction;clock_nanosleep 51
+hisat-3n-table;[unknown];Positions::outputFunction;pthread_mutex_lock 389
+hisat-3n-table;[unknown];Positions::outputFunction;std::basic_ostream<char, std::char_traits<char> >& std::__ostream_insert<char, std::char_traits<char> > 1
+hisat-3n-table;[unknown];Positions::outputFunction;std::basic_ostream<char, std::char_traits<char> >& std::__ostream_insert<char, std::char_traits<char> >;std::basic_filebuf<char, std::char_traits<char> >::xsputn 1
+hisat-3n-table;[unknown];Positions::outputFunction;std::basic_ostream<char, std::char_traits<char> >& std::__ostream_insert<char, std::char_traits<char> >;std::codecvt<char, char, __mbstate_t>::do_always_noconv 1
+hisat-3n-table;[unknown];Positions::outputFunction;std::ostream::put 1
+hisat-3n-table;[unknown];[libc.so.6] 1337
+hisat-3n-table;[unknown];[unknown];Alignment::appendBase 2
+hisat-3n-table;[unknown];[unknown];Positions::append 14791
+hisat-3n-table;[unknown];[unknown];Positions::append;[libc.so.6] 15910
+hisat-3n-table;[unknown];[unknown];Positions::append;[libc.so.6];[unknown] 158
+hisat-3n-table;[unknown];[unknown];Positions::append;[unknown];clock_nanosleep;[libc.so.6];[unknown] 156
+hisat-3n-table;[unknown];[unknown];Positions::append;__nanosleep 866
+hisat-3n-table;[unknown];[unknown];Positions::append;__nanosleep;[libc.so.6] 176
+hisat-3n-table;[unknown];[unknown];Positions::append;__nanosleep;clock_nanosleep 934
+hisat-3n-table;[unknown];[unknown];Positions::append;__nanosleep;clock_nanosleep;[libc.so.6] 8382
+hisat-3n-table;[unknown];[unknown];Positions::append;__nanosleep;clock_nanosleep;[libc.so.6];[unknown] 2213
+hisat-3n-table;[unknown];[unknown];Positions::append;clock_nanosleep 793
+hisat-3n-table;[unknown];[unknown];Positions::append;pthread_mutex_lock 23074
+hisat-3n-table;[unknown];[unknown];Positions::append;pthread_mutex_lock;[unknown] 2
+hisat-3n-table;[unknown];[unknown];[libc.so.6] 5534
+hisat-3n-table;[unknown];[unknown];[libc.so.6];[unknown] 1
+hisat-3n-table;[unknown];[unknown];[unknown];Positions::append 5
+hisat-3n-table;[unknown];[unknown];[unknown];Positions::append;[libc.so.6] 1
+hisat-3n-table;[unknown];[unknown];[unknown];Positions::append;pthread_mutex_lock 1
+hisat-3n-table;[unknown];[unknown];[unknown];pthread_mutex_lock 2
+hisat-3n-table;[unknown];[unknown];__nanosleep 4873
+hisat-3n-table;[unknown];[unknown];__nanosleep;[unknown] 1
+hisat-3n-table;[unknown];[unknown];memcpy@plt 1
+hisat-3n-table;[unknown];[unknown];nanosleep@plt 35
+hisat-3n-table;[unknown];[unknown];pthread_mutex_lock 15139
+hisat-3n-table;[unknown];[unknown];pthread_mutex_lock@plt 126
+hisat-3n-table;[unknown];[unknown];pthread_mutex_unlock 5281
+hisat-3n-table;[unknown];[unknown];pthread_mutex_unlock@plt 105
+hisat-3n-table;[unknown];[unknown];std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::find 2
+hisat-3n-table;[unknown];[unknown];void std::deque<Position*, std::allocator<Position*> >::_M_push_back_aux<Position* const&>;malloc 1
+hisat-3n-table;[unknown];[unknown];void std::deque<Position*, std::allocator<Position*> >::_M_push_back_aux<Position* const&>;operator new;[libc.so.6] 5
+hisat-3n-table;[unknown];[unknown];void std::deque<Position*, std::allocator<Position*> >::_M_push_back_aux<Position* const&>;operator new;[libc.so.6];[libc.so.6] 1
+hisat-3n-table;[unknown];__nanosleep 813
+hisat-3n-table;[unknown];hisat_3n_table 73
+hisat-3n-table;[unknown];hisat_3n_table;[libc.so.6] 157
+hisat-3n-table;[unknown];hisat_3n_table;[libc.so.6];[libc.so.6];[libc.so.6] 2
+hisat-3n-table;[unknown];hisat_3n_table;[unknown] 1
+hisat-3n-table;[unknown];hisat_3n_table;pthread_mutex_lock 138
+hisat-3n-table;[unknown];nanosleep@plt 6
+hisat-3n-table;[unknown];operator delete 1
+hisat-3n-table;[unknown];pthread_mutex_lock 2744
+hisat-3n-table;[unknown];pthread_mutex_lock@plt 24
+hisat-3n-table;[unknown];pthread_mutex_unlock 914
+hisat-3n-table;[unknown];pthread_mutex_unlock@plt 13
+hisat-3n-table;[unknown];std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::reserve 1
+hisat-3n-table;[unknown];std::basic_ifstream<char, std::char_traits<char> >::~basic_ifstream;[unknown];Positions::LoadChromosomeNamesPos;[libc.so.6] 2
+hisat-3n-table;[unknown];std::basic_ifstream<char, std::char_traits<char> >::~basic_ifstream;[unknown];Positions::LoadChromosomeNamesPos;std::basic_istream<char, std::char_traits<char> >& std::getline<char, std::char_traits<char>, std::allocator<char> > 6
+hisat-3n-table;[unknown];std::basic_ifstream<char, std::char_traits<char> >::~basic_ifstream;[unknown];Positions::LoadChromosomeNamesPos;std::basic_istream<char, std::char_traits<char> >& std::getline<char, std::char_traits<char>, std::allocator<char> >;std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_append 1
+hisat-3n-table;[unknown];std::ctype<char>::~ctype;[unknown];hisat_3n_table;std::basic_istream<char, std::char_traits<char> >& std::getline<char, std::char_traits<char>, std::allocator<char> > 2
+hisat-3n-table;[unknown];toupper 8
+hisat-3n-table;[unknown];toupper@plt 1
+hisat-3n-table;cfree 1
+hisat-3n-table;hisat_3n_table 11
+hisat-3n-table;hisat_3n_table;[libc.so.6] 43
+hisat-3n-table;hisat_3n_table;pthread_mutex_lock 47
+hisat-3n-table;hisat_3n_table;std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_assign 24
+hisat-3n-table;pthread_mutex_lock 4
+hisat-3n-table;pthread_mutex_lock@plt 2
+hisat-3n-table;void std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::__resize_and_overwrite<std::__cxx11::to_string 1
