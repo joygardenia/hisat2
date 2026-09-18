@@ -44,3 +44,15 @@ docs/.*-cache
 *.tar.gz
 *.ipynb
 *.pyc
+
+# build artifacts
+hisat-3n-table
+sthread
+
+# profiling / experiment outputs
+out.perf
+out.folded
+flamegraph*.svg
+perf.data
+perf.data.old
+*.folded
