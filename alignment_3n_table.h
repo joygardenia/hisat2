@@ -1,15 +1,12 @@
-/*
- * Copyright 2020, Yun (Leo) Zhang <imzhangyun@gmail.com>
- *
- * This file is part of HISAT-3N.
- *
- * HISAT-3N is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * HISAT-3N is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+/* *Copyright 2020,
+    Yun(Leo) Zhang<imzhangyun @gmail.com> **This file is part of HISAT -
+            3N. * *HISAT - 3N is free software : you can redistribute it and /
+        or modify *it under the terms of the GNU General Public License as
+        published by *the Free Software Foundation,
+    either version 3 of the License,
+    or *(at your option)any later version.**HISAT -
+            3N is distributed in the hope that it will be useful,
+    *but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
@@ -19,9 +16,9 @@
 
 #ifndef ALIGNMENT_3N_TABLE_H
 #define ALIGNMENT_3N_TABLE_H
-
-#include <string>
 #include "utility_3n_table.h"
+#include <iostream>
+#include <string>
 
 extern bool uniqueOnly;
 extern bool multipleOnly;
@@ -31,257 +28,333 @@ extern char convertFromComplement;
 extern char convertToComplement;
 
 using namespace std;
-
+extern long long int loadingBlockSize;
 /**
  * the class to store information from one SAM line
  */
 class Alignment {
 public:
-    string chromosome;
-    long long int location;
-    long long int mateLocation;
-    int flag;
-    bool mapped;
-    char strand;
-    string sequence;
-    string quality;
-    bool unique;
-    string mapQ;
-    int NH;
-    vector<PosQuality> bases;
-    CIGAR cigarString;
-    MD_tag MD;
-    unsigned long long readNameID;
-    int sequenceCoveredLength; // the sum of number is cigarString;
-    bool overlap; // if the segment could overlap with the mate segment.
-    bool paired;
+  string chromosome;
+  long long int location;
+  long long int mateLocation;
+  int flag;
+  bool mapped;
+  char strand;
+  string sequence;
+  string quality;
+  bool unique;
+  string mapQ;
+  int NH;
+  vector<PosQuality> bases;
+  CIGAR cigarString;
+  MD_tag MD;
+  unsigned long long readNameID;
+  int sequenceCoveredLength; // the sum of number is cigarString;
+  bool overlap; // if the segment could overlap with the mate segment.
+  bool paired;
+  int startRefPos;
+  int endRefPos;
+  int middleRefPos;
+  bool isFirstPage;
+  long long int front_page;
+  int front_letter;
 
-    void initialize() {
-        chromosome.clear();
-        location = -1;
-        mateLocation = -1;
-        flag = -1;
-        mapped = false;
-        MD.initialize();
-        cigarString.initialize();
-        sequence.clear();
-        quality.clear();
-        unique = false;
-        mapQ.clear();
-        NH = -1;
-        bases.clear();
-        readNameID = 0;
-        sequenceCoveredLength = 0;
-        overlap = false;
-        paired = false;
-    }
-
-    /**
-     * for start position in input Line, check if it contain the target information.
-     */
-    bool startWith(string* inputLine, int startPosition, string tag){
-        for (int i = 0; i < tag.size(); i++){
-            if (inputLine->at(startPosition+i) != tag[i]){
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * generate a hash value for readName
-     */
-     void getNameHash(string& readName) {
-        readNameID = 0;
-        int a = 63689;
-        for (size_t i = 0; i < readName.size(); i++) {
-            readNameID = (readNameID * a) + (int)readName[i];
-        }
-     }
-
-    /**
-     * extract the information from SAM line to Alignment.
-     */
-     void parseInfo(string* line) {
-        int startPosition = 0;
-        int endPosition = 0;
-        int count = 0;
-
-        while ((endPosition = line->find("\t", startPosition)) != string::npos) {
-            if (count == 0) {
-                string readName = line->substr(startPosition, endPosition - startPosition);
-                getNameHash(readName);
-            } else if (count == 1) {
-                flag = stoi(line->substr(startPosition, endPosition - startPosition));
-                mapped = (flag & 4) == 0;
-                paired = (flag & 1) != 0;
-            } else if (count == 2) {
-                chromosome = line->substr(startPosition, endPosition - startPosition);
-            } else if (count == 3) {
-                location = stoll(line->substr(startPosition, endPosition - startPosition));
-            } else if (count == 4) {
-                mapQ = line->substr(startPosition, endPosition - startPosition);
-                if (mapQ == "1") {
-                    unique = false;
-                } else {
-                    unique = true;
-                }
-            } else if (count == 5) {
-                cigarString.loadString(line->substr(startPosition, endPosition - startPosition));
-            } else if (count == 7) {
-                mateLocation = stoll(line->substr(startPosition, endPosition - startPosition));
-            } else if (count == 9) {
-                sequence = line->substr(startPosition, endPosition - startPosition);
-            } else if (count == 10) {
-                quality = line->substr(startPosition, endPosition - startPosition);
-            } else if (count > 10) {
-                if (startWith(line, startPosition, "MD")) {
-                    MD.loadString(line->substr(startPosition + 5, endPosition - startPosition - 5));
-                } else if (startWith(line, startPosition, "NM")) {
-                    NH = stoi(line->substr(startPosition + 5, endPosition - startPosition - 5));
-                } else if (startWith(line, startPosition, "YZ")) {
-                    strand = line->at(endPosition-1);
-                }
-            }
-            startPosition = endPosition + 1;
-            count++;
-        }
-        if (startWith(line, startPosition, "MD")) {
-            MD.loadString(line->substr(startPosition + 5, endPosition - startPosition - 5));
-        } else if (startWith(line, startPosition, "NM")) {
-            NH = stoi(line->substr(startPosition + 5, endPosition - startPosition - 5));
-        } else if (startWith(line, startPosition, "YZ")) {
-            strand = line->at(endPosition-1);
-        }
-     }
-
-     /**
-      * change the overlap = true, if the read is not uniquely mapped or the read segment is overlap to it's mate.
-      */
-      void checkOverlap() {
-          if (!unique) {
-              overlap = true;
-          } else {
-              if (paired && (location + sequenceCoveredLength >= mateLocation)) {
-                  overlap = true;
-              } else {
-                  overlap = false;
-              }
-          }
+  void initialize() {
+    chromosome.clear();
+    location = -1;
+    mateLocation = -1;
+    flag = -1;
+    middleRefPos = -1;
+    isFirstPage = true;
+    mapped = false;
+    MD.initialize();
+    cigarString.initialize();
+    sequence.clear();
+    quality.clear();
+    unique = false;
+    mapQ.clear();
+    NH = -1;
+    vector<PosQuality>().swap(bases);
+    // bases.clear(); // 容器大小 size() 变成 0；但容量 capacity()
+    //  不会变（除非你手动缩容）
+    readNameID = 0;
+    sequenceCoveredLength = 0;
+    overlap = false;
+    paired = false;
+  }
+  Alignment() { initialize(); };
+  /**
+   * for start position in input Line, check if it contain the target
+   * information.
+   */
+  bool startWith(string *inputLine, int startPosition, string tag) {
+    for (int i = 0; i < tag.size(); i++) {
+      if (inputLine->at(startPosition + i) != tag[i]) {
+        return false;
       }
+    }
+    return true;
+  }
 
+  /**
+   * generate a hash value for readName
+   */
+  void getNameHash(string &readName) {
+    readNameID = 0;
+    int a = 63689;
+    for (size_t i = 0; i < readName.size(); i++) {
+      readNameID = (readNameID * a) + (int)readName[i];
+    }
+  }
 
-    /**
-     * parse the sam line to alignment information
-     */
-    void parse(string* line) {
-        initialize();
-        parseInfo(line);
-        if ((uniqueOnly && !unique) || (multipleOnly && unique)) {
-            return;
+  /**
+   * extract the information from SAM line to Alignment.
+   */
+  void parseInfo(string *line) {
+    int startPosition = 0;
+    int endPosition = 0;
+    int count = 0;
+
+    while ((endPosition = line->find("\t", startPosition)) != string::npos) {
+      if (count == 0) {
+        string readName =
+            line->substr(startPosition, endPosition - startPosition);
+        getNameHash(readName);
+      } else if (count == 1) {
+        flag = stoi(line->substr(startPosition, endPosition - startPosition));
+        mapped = (flag & 4) == 0;
+        paired = (flag & 1) != 0;
+      } else if (count == 2) {
+        chromosome = line->substr(startPosition, endPosition - startPosition);
+      } else if (count == 3) {
+        location =
+            stoll(line->substr(startPosition, endPosition - startPosition));
+      } else if (count == 4) {
+        mapQ = line->substr(startPosition, endPosition - startPosition);
+        if (mapQ == "1") {
+          unique = false;
+        } else {
+          unique = true;
         }
-        appendBase();
+      } else if (count == 5) {
+        cigarString.loadString(
+            line->substr(startPosition, endPosition - startPosition));
+      } else if (count == 7) {
+        mateLocation =
+            stoll(line->substr(startPosition, endPosition - startPosition));
+      } else if (count == 9) {
+        sequence = line->substr(startPosition, endPosition - startPosition);
+      } else if (count == 10) {
+        quality = line->substr(startPosition, endPosition - startPosition);
+      } else if (count > 10) {
+        if (startWith(line, startPosition, "MD")) {
+          MD.loadString(
+              line->substr(startPosition + 5, endPosition - startPosition - 5));
+        } else if (startWith(line, startPosition, "NM")) {
+          NH = stoi(
+              line->substr(startPosition + 5, endPosition - startPosition - 5));
+        } else if (startWith(line, startPosition, "YZ")) {
+          strand = line->at(endPosition - 1);
+        }
+      }
+      startPosition = endPosition + 1;
+      count++;
+    }
+    if (startWith(line, startPosition, "MD")) {
+      MD.loadString(
+          line->substr(startPosition + 5, endPosition - startPosition - 5));
+    } else if (startWith(line, startPosition, "NM")) {
+      NH = stoi(
+          line->substr(startPosition + 5, endPosition - startPosition - 5));
+    } else if (startWith(line, startPosition, "YZ")) {
+      strand = line->at(endPosition - 1);
+    }
+  }
+
+  /**
+   * change the overlap = true, if the read is not uniquely mapped or the read
+   * segment is overlap to it's mate.
+   */
+  void checkOverlap() {
+    if (!unique) {
+      overlap = true;
+    } else {
+      if (paired && (location + sequenceCoveredLength >= mateLocation)) {
+        overlap = true;
+      } else {
+        overlap = false;
+      }
+    }
+  }
+
+  /**
+   * parse the sam line to alignment information
+   */
+  bool parse(string *line) {
+    // initialize(); // return 回收的时候已经初始化了
+    parseInfo(line);
+    if ((uniqueOnly && !unique) ||
+        (multipleOnly && unique)) { // mapQ = 60的read被去掉了
+      //  此处特殊情况，需要popfront 对象Alingment,加在函数调用处了
+      // FIXME:
+      return false;
     }
 
-    /**
-     *  scan all base in read sequence label them if they are qualified.
-     */
-    void appendBase() {
-        if (!mapped || sequenceCoveredLength > 500000) { // if the read's intron longer than 500,000 ignore this read
-            return;
-        }
+    appendBase(); // 标注每个碱基的“是否符合条件”
+                  // 找出：哪些碱基在比对中是 目标突变（如 C→T
+                  // 转换），哪些碱基应当被忽略（不匹配、删除、或质量太低）。
+    return true;
+  }
 
-        bases.reserve(sequence.size());
-        for (int i = 0; i < sequence.size(); i++) {
-            bases.emplace_back(i);
-        }
-        int pos = adjustPos();
-
-        string match;
-        while (MD.getNextSegment(match)) {
-            if (isdigit(match.front())) { // the first char of match is digit this is match
-                int len = stoi(match);
-                for (int i = 0; i < len; i++) {
-                    while (bases[pos].remove) {
-                        pos++;
-                    }
-                    if ((strand == '+' && sequence[pos] == convertFrom) ||
-                        (strand == '-' && sequence[pos] == convertFromComplement)) {
-                        bases[pos].setQual(quality[pos], false);
-                    } else {
-                        bases[pos].remove = true;
-                    }
-                    pos ++;
-                }
-            } else if (isalpha(match.front())) { // this is mismatch or conversion
-                char refBase = match.front();
-                // for + strand, it should have C->T change
-                // for - strand, it should have G->A change
-                while (bases[pos].remove) {
-                    pos++;
-                }
-
-                if ((strand == '+' && refBase == convertFrom && sequence[pos] == convertTo) ||
-                    (strand == '-' && refBase == convertFromComplement && sequence[pos] == convertToComplement)){
-                    bases[pos].setQual(quality[pos], true);
-                } else {
-                    bases[pos].remove = true;
-                }
-                pos ++;
-            } else { // deletion. do nothing.
-
-            }
-        }
+  /**
+   *  scan all base in read sequence label them if they are qualified.
+   */
+  void
+  appendBase() { // 根据 CIGAR 与 MD 标签，把 read
+                 // 序列中的每个碱基与参考基因组对应起来，并标记哪些碱基是匹配的、突变的或发生了甲基化（C→T
+                 // / G→A）转换，同时记录每个碱基的测序质量值。
+    if (!mapped || sequenceCoveredLength > 500000) { // if the read's intron
+                                                     // longer than 500,000
+      // ignore this read
+      return;
     }
 
-    /**
-     * adjust the reference position in bases
-     */
-    int  adjustPos() {
-
-        int readPos = 0;
-        int returnPos = 0;
-        int seqLength = sequence.size();
-
-        char cigarSymbol;
-        int cigarLen;
-        sequenceCoveredLength = 0;
-
-        while (cigarString.getNextSegment(cigarLen, cigarSymbol)) {
-            sequenceCoveredLength += cigarLen;
-            if (cigarSymbol == 'S') {
-                if (readPos == 0) { // soft clip is at the begin of the read
-                    returnPos = cigarLen;
-                    for (int i = cigarLen; i < seqLength; i++) {
-                        bases[i].refPos -= cigarLen;
-                    }
-                } else { // soft clip is at the end of the read
-                    // do nothing
-                }
-                readPos += cigarLen;
-            } else if (cigarSymbol == 'N') {
-                for (int i = readPos; i < seqLength; i++) {
-                    bases[i].refPos += cigarLen;
-                }
-            } else if (cigarSymbol == 'M') {
-                for (int i = readPos; i < readPos+cigarLen; i++) {
-                    bases[i].remove = false;
-                }
-                readPos += cigarLen;
-            } else if (cigarSymbol == 'I') {
-                for (int i = readPos + cigarLen; i < seqLength; i++) {
-                    bases[i].refPos -= cigarLen;
-                }
-                readPos += cigarLen;
-            } else if (cigarSymbol == 'D') {
-                for (int i = readPos; i < seqLength; i++) {
-                    bases[i].refPos += cigarLen;
-                }
-            }
-        }
-        return returnPos;
+    bases.reserve(sequence.size());
+    for (int i = 0; i < sequence.size(); i++) {
+      bases.emplace_back(i);
     }
+    int pos = adjustPos(); // ref真正的起点
 
+    string match;
+    while (MD.getNextSegment(match)) {
+      if (isdigit(match.front())) { // the first char of match is digit this is
+                                    // match
+        int len = stoi(match);
+        for (int i = 0; i < len; i++) {
+          while (bases[pos].remove) {
+            pos++;
+          }
+          if ((strand == '+' && sequence[pos] == convertFrom) ||
+              (strand == '-' && sequence[pos] == convertFromComplement)) {
+            bases[pos].setQual(quality[pos], false);
+          } else {
+            bases[pos].remove = true;
+          }
+          pos++;
+        }
+      } else if (isalpha(match.front())) { // this is mismatch or conversion
+        char refBase = match.front();
+        // for + strand, it should have C->T change
+        // for - strand, it should have G->A change
+        while (bases[pos].remove) {
+          pos++;
+        }
+
+        if ((strand == '+' && refBase == convertFrom &&
+             sequence[pos] == convertTo) ||
+            (strand == '-' && refBase == convertFromComplement &&
+             sequence[pos] == convertToComplement)) {
+          bases[pos].setQual(quality[pos], true);
+        } else {
+          bases[pos].remove = true;
+        }
+        pos++;
+      } else { // deletion. do nothing.
+      }
+    }
+  }
+
+  /**
+   * adjust the reference position in bases
+   */
+  int adjustPos() { // 根据 CIGAR 串调整每个碱基的参考位置
+    // 保证 bases[i].refPos
+    // 与参考基因组坐标一致，并且标记哪些碱基未比对（remove=true）
+    int readPos = 0;   // 当前解析到的 read 内部碱基下标（从 0 开始）
+    int returnPos = 0; // 真正开始的碱基起点
+    int seqLength = sequence.size();
+
+    char cigarSymbol;
+    int cigarLen;
+    sequenceCoveredLength = 0;
+
+    while (cigarString.getNextSegment(cigarLen, cigarSymbol)) {
+      sequenceCoveredLength += cigarLen;
+      if (cigarSymbol == 'S') {
+        if (readPos == 0) { // soft clip is at the begin of the read
+          returnPos = cigarLen;
+
+          for (int i = cigarLen; i < seqLength; i++) {
+            bases[i].refPos -= cigarLen; // 初始化：bases.emplace_back(i);
+          }
+        } else { // soft clip is at the end of the read
+                 // do nothing
+        }
+        readPos += cigarLen;
+      } else if (cigarSymbol == 'N') {
+        for (int i = readPos; i < seqLength; i++) {
+          bases[i].refPos += cigarLen;
+        }
+      } else if (cigarSymbol == 'M') {
+
+        for (int i = readPos; i < readPos + cigarLen; i++) {
+          bases[i].remove = false;
+        }
+        readPos += cigarLen;
+      } else if (cigarSymbol == 'I') {
+        for (int i = readPos + cigarLen; i < seqLength; i++) {
+          bases[i].refPos -= cigarLen;
+        }
+        readPos += cigarLen;
+      } else if (cigarSymbol == 'D') {
+        for (int i = readPos; i < seqLength; i++) {
+          bases[i].refPos += cigarLen;
+        }
+      }
+    }
+    int localMin = bases[returnPos].refPos;
+    int localMax = 0;
+    for (int i = returnPos; i < seqLength; i++) {
+      int ref = bases[i].refPos;
+      if (ref > localMax)
+        localMax = ref;
+      if (ref < localMin)
+        localMin = ref;
+    }
+    endRefPos = localMax;
+    startRefPos = localMin;
+
+    // 类中的成员
+    front_page = (startRefPos + location) / loadingBlockSize;
+    front_letter = (startRefPos + location) % loadingBlockSize;
+    if (front_letter == 0)
+      front_page--;
+
+    int last_page = (endRefPos + location) / loadingBlockSize;
+    int last_letter = (endRefPos + location) % loadingBlockSize;
+    if (last_letter == 0)
+      last_page--;
+
+    if (front_page != last_page) {
+      long long int last_page_pos = last_page * loadingBlockSize;
+      for (int i = returnPos; i < seqLength; i++) {
+        int ref = bases[i].refPos;
+        if (ref + location > last_page_pos) {
+          middleRefPos = i;
+          break;
+        }
+      }
+      int offset = bases[middleRefPos].refPos; // 以第一个越界的base为基准
+      for (int i = middleRefPos + 1; i < seqLength; i++) {
+        bases[i].refPos -= offset;
+      }
+    }
+    return returnPos;
+  }
+
+  int refLineCount() {
+    return (endRefPos - startRefPos) / loadingBlockSize + 2;
+  }
 };
 
-#endif //ALIGNMENT_3N_TABLE_H
+#endif // ALIGNMENT_3N_TABLE_H
