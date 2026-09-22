@@ -56,3 +56,7 @@ flamegraph*.svg
 perf.data
 perf.data.old
 *.folded
+
+# generated conversion tables
+*.table
+*.tsv
