@@ -1,6 +1,99 @@
 HISAT-3N
 ============
 
+> **本仓库是 HISAT-3N 的性能优化分支**
+> 将 `hisat-3n-table` 从「全基因组逐碱基扫描」重构为「按页按需加载 + 两阶段 Pipeline」
+> 冷缓存口径加速 **90.5×**,热缓存口径加速 **300.5×**
+> 上游项目:https://github.com/DaehwanKimLab/hisat2 (GPLv3)
+
+## 本分支做了什么
+
+`hisat-3n-table` 从排序后的 SAM 与参考基因组,计算每个位点的碱基转化统计。
+
+**原始实现的瓶颈不在 IO,在 CPU。** 主循环随着 SAM 位置推进,顺序扫完整份参考基因组:
+
+```cpp
+while (samPos > reloadPos) {   // SAM 跨越全部染色体,reloadPos 被推着走完整个基因组
+    positions->loadMore();
+    reloadPos += loadingBlockSize;
+}
+```
+
+`loadMore()` 对扫过的**每一个碱基**执行:
+
+- `toupper()` 逐字符大写
+- `getFreePosition()` 取对象 + `refPositions.push_back()` 容器增长
+
+主线程还要用 `sleep_for(1μs)` spin-wait 等 worker。因此原版成本是 **O(参考基因组大小)**,与 SAM 比对条数无关 —— 本例中仅 863 条比对,却要跑 133 秒。
+
+优化后的做法:
+
+| 优化 | 做法 | 效果 |
+|---|---|---|
+| 按页按需加载 | 按 SAM 命中的 ref 页号直接 `seekg`,取代顺序推进 | 复杂度 O(基因组) → O(命中范围) |
+| 预分配数组 | `ref + (index_group++)` 取代每碱基 `new` + `push_back` | 热路径零堆分配 |
+| 两阶段 Pipeline | Parse/Group 与 Ref-Load/Compute/Output 并行 | IO 与计算重叠 |
+| LRU 页缓存 | 以 ref 页号为 key 聚合 read,按染色体边界批量淘汰 | 同页 read 合并 |
+| 三级对象池 | `string` / `Alignment` / `DLinkedNode` 复用 | 消除跨线程分配开销 |
+| Lock-free Queue | 阶段之间无锁传递 | 取代 spin-wait |
+
+### 性能
+
+数据集:`SRR26378479_filter.dump`(863 条比对)+ GRCh38(3.0 GB),取 3 次运行的中位数。
+
+| 口径 | 原始 | 优化后 | 加速比 |
+|---|---|---|---|
+| 冷缓存(每轮运行前 `drop_caches`) | 132.99 s | **1.47 s** | **90.5×** |
+| 热缓存(数据已在 page cache) | 135.22 s | **0.45 s** | **300.5×** |
+
+对照实验:原版加 `-p 16` 后为 182.64 s(热缓存),比 `-p 1` **慢 35%**。
+
+**为什么两个口径差这么多**:原版是 CPU 密集型,磁盘 IO 被完全掩盖,所以冷热几乎无差别(132.99 vs 135.22 s)。优化版把 CPU 工作降低了约 300 倍后,总时间才逼近真实 IO 时间 —— 冷热差 1.02 s ≈ 3.0 GB ÷ 3 GB/s,恰好是磁盘读一遍参考基因组的时间。
+
+**正确性**:两个版本输出均为 3122 行,排序后逐字节一致。
+
+### 测试环境
+
+| 项 | 值 |
+|---|---|
+| CPU | Intel Core i5-13500H (16 threads),`governor=performance` |
+| 内存 | 15 GiB |
+| 磁盘 | NVMe SSD |
+| OS / 编译器 | Manjaro Linux 6.12.103 / GCC 16.1.1 |
+| 测量方法 | 冷口径每轮运行前 `sync` + `echo 3 > drop_caches`;取中位数(N=3) |
+
+### 已知代价与局限
+
+- **内存上升**:`maxRSS` 从 411 MB 升至 3084 MB —— 用内存换 CPU。`LoadChromosomeNamesPos` 通过 mmap 把整份参考基因组映射进地址空间。
+- **IO 量并未减少**:两个版本都读 3 GB。`LoadChromosomeNamesPos` 仍需全量扫描以建立染色体偏移索引,这是优化之后的**新瓶颈**,也是下一步目标(改用 `.fai` 式预建索引,或并行化扫描)。
+- **`-p/--threads` 暂不生效**:当前实现固定为两阶段 pipeline(main + output)。原版 `-p` 同样收效甚微,原因见上:其瓶颈在主线程,增加 worker 只会加剧锁竞争。
+
+### 构建与运行
+
+    git clone https://github.com/joygardenia/hisat2.git
+    cd hisat2
+    git checkout release
+    make hisat-3n-table
+
+    ./hisat-3n-table -m \
+      --alignments <sorted.sam> \
+      --ref <reference.fa> \
+      --output-name /dev/stdout \
+      --base-change C,T
+
+### 改动文件
+
+| 文件 | 职责 |
+|---|---|
+| `hisat_3n_table.cpp` | `hisat-3n-table` 入口:两阶段 Pipeline 调度 |
+| `position_3n_table.h` | `Positions`:按页加载 ref、LRU 页缓存、逐位点统计 |
+| `utility_3n_table.h` | `SafeQueue` / `LRUCache` / 三级对象池 |
+| `alignment_3n_table.h` | SAM 记录解析、`front_page` 页号计算 |
+
+---
+
+<!-- 以下为上游 HISAT-3N 原始文档,未作修改 -->
+
 Overview
 -----------------
 HISAT-3N (hierarchical indexing for spliced alignment of transcripts - 3 nucleotides)
