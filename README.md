@@ -3,7 +3,7 @@ HISAT-3N
 
 > **本仓库是 HISAT-3N 的性能优化分支**
 > 将 `hisat-3n-table` 从「全基因组逐碱基扫描」重构为「按页按需加载 + 两阶段 Pipeline」
-> 冷缓存口径加速 **90.5×**,热缓存口径加速 **300.5×**
+> 冷缓存口径加速 **132×**(首次运行,含构建索引)/ **766×**(索引已就绪)
 > 上游项目:https://github.com/DaehwanKimLab/hisat2 (GPLv3)
 
 ## 本分支做了什么
@@ -24,7 +24,7 @@ while (samPos > reloadPos) {   // SAM 跨越全部染色体,reloadPos 被推着�
 - `toupper()` 逐字符大写
 - `getFreePosition()` 取对象 + `refPositions.push_back()` 容器增长
 
-主线程还要用 `sleep_for(1μs)` spin-wait 等 worker。因此原版成本是 **O(参考基因组大小)**,与 SAM 比对条数无关 —— 本例中仅 863 条比对,却要跑 133 秒。
+主线程还要用 `sleep_for(1μs)` spin-wait 等 worker。因此原版成本是 **O(参考基因组大小)**,与 SAM 比对条数无关 —— 本例中仅 863 条比对,却要跑 146 秒。
 
 优化后的做法:
 
@@ -36,21 +36,32 @@ while (samPos > reloadPos) {   // SAM 跨越全部染色体,reloadPos 被推着�
 | LRU 页缓存 | 以 ref 页号为 key 聚合 read,按染色体边界批量淘汰 | 同页 read 合并 |
 | 三级对象池 | `string` / `Alignment` / `DLinkedNode` 复用 | 消除跨线程分配开销 |
 | Lock-free Queue | 阶段之间无锁传递 | 取代 spin-wait |
+| 染色体偏移索引 | 扫描结果落盘为 samtools 兼容的 `<ref>.fai`,取代每次运行的全量扫描 | 稳态下 ref 读取 3 GB → 6.4 KB |
+| 有界内存扫描 | 索引构建改为 8 MB 分窗 + `MADV_DONTNEED` | 构建期 maxRSS 3083 MB → 14 MB |
 
 ### 性能
 
-数据集:`SRR26378479_filter.dump`(863 条比对)+ GRCh38(3.0 GB),取 3 次运行的中位数。
+数据集:`SRR26378479_filter.dump`(863 条比对)+ GRCh38(3.0 GB)。
+每轮运行前 `sync` + `drop_caches` 冷启动,取 3 次运行的中位数。
 
-| 口径 | 原始 | 优化后 | 加速比 |
-|---|---|---|---|
-| 冷缓存(每轮运行前 `drop_caches`) | 132.99 s | **1.47 s** | **90.5×** |
-| 热缓存(数据已在 page cache) | 135.22 s | **0.45 s** | **300.5×** |
+| 口径 | 原始 | 优化后 | 加速比 | maxRSS |
+|---|---|---|---|---|
+| 首次运行(含构建 `<ref>.fai` 索引) | 145.62 s | **1.10 s** | **132×** | 401 → 14 MB |
+| 索引已就绪 | 145.62 s | **0.19 s** | **766×** | 401 → 6 MB |
 
-对照实验:原版加 `-p 16` 后为 182.64 s(热缓存),比 `-p 1` **慢 35%**。
+**索引成本的计算口径**:原始实现每次运行都必须顺序扫完整份参考基因组,才能确定各染色体的字节偏移;
+优化后把这一步的产物落盘(`.fai`),首次构建之后即可复用。同一份参考基因组跑 N 次的总成本:
 
-**为什么两个口径差这么多**:原版是 CPU 密集型,磁盘 IO 被完全掩盖,所以冷热几乎无差别(132.99 vs 135.22 s)。优化版把 CPU 工作降低了约 300 倍后,总时间才逼近真实 IO 时间 —— 冷热差 1.02 s ≈ 3.0 GB ÷ 3 GB/s,恰好是磁盘读一遍参考基因组的时间。
+    原始:   N × 145.62 s
+    优化后: 1.10 s + (N − 1) × 0.19 s
 
-**正确性**:两个版本输出均为 3122 行,排序后逐字节一致。
+N=1 → 132×,N=3 → 295×,N 增大时渐近 **766×**。
+
+**为什么原版是 CPU 密集型而非 IO 密集型**:原版实测 CPU 占用 108%,全程跑满;
+瓶颈是 31 亿次 `toupper` + 每碱基构造 `Position`,外加一千万次 spin-wait 上下文切换。
+相比之下,读 3 GB 参考基因组按 NVMe 带宽只需约 1 秒 —— 磁盘从来不是瓶颈。
+
+**正确性**:两版本输出均为 3122 行,排序后逐字节一致。
 
 ### 测试环境
 
@@ -64,9 +75,11 @@ while (samPos > reloadPos) {   // SAM 跨越全部染色体,reloadPos 被推着�
 
 ### 已知代价与局限
 
-- **内存上升**:`maxRSS` 从 411 MB 升至 3084 MB —— 用内存换 CPU。`LoadChromosomeNamesPos` 通过 mmap 把整份参考基因组映射进地址空间。
-- **IO 量并未减少**:两个版本都读 3 GB。`LoadChromosomeNamesPos` 仍需全量扫描以建立染色体偏移索引,这是优化之后的**新瓶颈**,也是下一步目标(改用 `.fai` 式预建索引,或并行化扫描)。
-- **`-p/--threads` 暂不生效**:当前实现固定为两阶段 pipeline(main + output)。原版 `-p` 同样收效甚微,原因见上:其瓶颈在主线程,增加 worker 只会加剧锁竞争。
+- **首次运行需要构建索引**:约 1.10 s(构建 + 运行),之后每次 0.19 s。
+  索引为 samtools 兼容格式,可直接复用 `samtools faidx <ref.fa>` 的产物,无需本程序生成。
+- **`-p/--threads` 暂不生效**:当前实现固定为两阶段 pipeline(main + output)。
+  原版 `-p` 同样收效甚微:其瓶颈在主线程,增加 worker 只会加剧锁竞争
+  (实测原版 `-p 16` 比 `-p 1` 慢 35%)。
 
 ### 构建与运行
 
@@ -81,12 +94,15 @@ while (samPos > reloadPos) {   // SAM 跨越全部染色体,reloadPos 被推着�
       --output-name /dev/stdout \
       --base-change C,T
 
+首次运行会在参考基因组旁自动生成 `<reference.fa>.fai`(6.4 KB),之后运行直接复用。
+如需把索引构建移出计时窗口,可先用 `samtools faidx <reference.fa>` 预建(格式兼容)。
+
 ### 改动文件
 
 | 文件 | 职责 |
 |---|---|
 | `hisat_3n_table.cpp` | `hisat-3n-table` 入口:两阶段 Pipeline 调度 |
-| `position_3n_table.h` | `Positions`:按页加载 ref、LRU 页缓存、逐位点统计 |
+| `position_3n_table.h` | `Positions`:染色体偏移索引(`.fai` 读写)、按页加载 ref、LRU 页缓存、逐位点统计 |
 | `utility_3n_table.h` | `SafeQueue` / `LRUCache` / 三级对象池 |
 | `alignment_3n_table.h` | SAM 记录解析、`front_page` 页号计算 |
 
