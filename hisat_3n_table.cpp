@@ -274,6 +274,8 @@ void forwardSam(istream *alignmentFile, Positions *positions,
       positions->returnLine(line);
       break;
     }
+    if (!line->empty() && line->back() == '\r')
+      line->pop_back();
     if (line->empty() || line->front() == '@') {
       continue;
     }
@@ -308,6 +310,8 @@ bool readNewSamChromosome(istream *alignmentFile, Positions *positions,
 
       return false;
     }
+    if (!line->empty() && line->back() == '\r')
+      line->pop_back();
     if (line->empty() || line->front() == '@') {
       positions->returnLine(line);
       continue;
