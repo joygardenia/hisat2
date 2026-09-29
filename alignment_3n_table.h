@@ -167,7 +167,9 @@ public:
       NH = stoi(
           line->substr(startPosition + 5, endPosition - startPosition - 5));
     } else if (startWith(line, startPosition, "YZ")) {
-      strand = line->at(endPosition - 1);
+      size_t v = (size_t)startPosition + 5;
+      if (v < line->size())
+        strand = line->at(v);
     }
   }
 
