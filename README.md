@@ -24,7 +24,7 @@ while (samPos > reloadPos) {   // SAM 跨越全部染色体,reloadPos 被推着�
 - `toupper()` 逐字符大写
 - `getFreePosition()` 取对象 + `refPositions.push_back()` 容器增长
 
-主线程还要用 `sleep_for(1μs)` spin-wait 等 worker。因此原版成本是 **O(参考基因组大小)**,与 SAM 比对条数无关 —— 本例中仅 863 条比对,却要跑 146 秒。
+主线程还要用 `sleep_for(1μs)` spin-wait 等 worker。因此原版成本是 **O(参考基因组大小)**,与 SAM 比对条数无关 —— 本例中仅 663 条比对,却要跑 146 秒。
 
 优化后的做法:
 
@@ -41,7 +41,7 @@ while (samPos > reloadPos) {   // SAM 跨越全部染色体,reloadPos 被推着�
 
 ### 性能
 
-数据集:`SRR26378479_filter.dump`(863 条比对)+ GRCh38(3.0 GB)。
+数据集:`SRR26378479_filter.dump`(663 条比对)+ GRCh38(3.0 GB)。
 每轮运行前 `sync` + `drop_caches` 冷启动,取 3 次运行的中位数。
 
 | 口径 | 原始 | 优化后 | 加速比 | maxRSS |
