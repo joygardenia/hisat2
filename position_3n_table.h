@@ -264,53 +264,72 @@ public:
     return targetPos - firstPos;
   }
 
-  /**
-   * given reference line (start with '>'), extract the chromosome information.
-   * this is important when there is space in chromosome name. the SAM
-   * information only contain the first word.
-   */
-  string getChrName(string &inputLine) {
-    string name;
-    for (int i = 1; i < inputLine.size(); i++) {
-      char c = inputLine[i];
-      if (isspace(c)) {
+  void LoadChromosomeNamesPos(const string &refFileName) {
+    if (!readFaiIfFresh(refFileName)) {
+      scanAndBuildFai(refFileName);
+    }
+    for (auto &c : chromosomePos.pos) {
+      if (loadingBlockSize % c.lineBases != 0) {
+        cerr << "warning: page size " << loadingBlockSize
+             << " is not a multiple of lineBases " << c.lineBases
+             << " (chromosome " << c.chromosome << "); pages may misalign."
+             << endl;
         break;
       }
-      name += c;
     }
-
-    if (removedChrName) {
-      if (name.find("chr") == 0) {
-        name = name.substr(3);
-      }
-    } else if (addedChrName) {
-      if (name.find("chr") != 0) {
-        name = string("chr") + name;
-      }
-    }
-    return name;
   }
 
-  void _LoadChromosomeNamesPos() {
+  /**
+   * 读取 samtools 风格的 <ref>.fai。存在且不早于参考基因组时返回 true。
+   * 格式:name \t length \t offset \t linebases \t linewidth
+   */
+  bool readFaiIfFresh(const string &refFileName) {
+    string faiName = refFileName + ".fai";
+    struct stat refStat, faiStat;
+    if (stat(refFileName.c_str(), &refStat) != 0)
+      return false;
+    if (stat(faiName.c_str(), &faiStat) != 0)
+      return false;
+    if (faiStat.st_mtime < refStat.st_mtime)
+      return false;
+
+    ifstream fai(faiName);
+    if (!fai.good())
+      return false;
+
     string line;
-    // while (refFile.good()) {
-    while (getline(refFile, line)) {
-      // getline(refFile, line);
-      // if (line.front() == '>') {
-      if (!line.empty() &&
-          line.front() == '>') { // this line is chromosome name
-        chromosome = getChrName(line);
-        streampos currentPos = refFile.tellg();
-        chromosomePos.append( // vector
-            chromosome,
-            currentPos); // File position for char
-                         // streams.每条染色体的名字和字节流位置？dump文件中的位置
-      }
+    while (getline(fai, line)) {
+      if (line.empty() || line.front() == '#')
+        continue;
+      size_t t1 = line.find('\t');
+      if (t1 == string::npos)
+        continue;
+      size_t t2 = line.find('\t', t1 + 1);
+      if (t2 == string::npos)
+        continue;
+      size_t t3 = line.find('\t', t2 + 1);
+      if (t3 == string::npos)
+        continue;
+      size_t t4 = line.find('\t', t3 + 1);
+      if (t4 == string::npos)
+        continue;
+
+      string chr = line.substr(0, t1);
+      streampos off = (streampos)stoll(line.substr(t2 + 1, t3 - t2 - 1));
+      int lb = stoi(line.substr(t3 + 1, t4 - t3 - 1));
+      int lw = stoi(line.substr(t4 + 1));
+      if (lb <= 0 || lw <= 0)
+        continue;
+      chromosomePos.append(chr, off, lb, lw);
     }
+    if (chromosomePos.pos.empty())
+      return false;
     chromosomePos.sort();
     chromosome.clear();
+    return true;
   }
-  void LoadChromosomeNamesPos(const string &refFileName) {
+
+  void scanAndBuildFai(const string &refFileName) {
     int fd = open(refFileName.c_str(), O_RDONLY);
     if (fd < 0)
       throw runtime_error("open failed");
@@ -321,71 +340,98 @@ public:
 
     char *data = (char *)mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
+    if (data == MAP_FAILED)
+      throw runtime_error("mmap failed");
 
-    char *p = data;
     char *end = data + size;
+    char *p = data;
 
-    /*while (p < end) {
-
-     if (*p == '>') {
-        char *header_start = p + 1;
-
-        // 找到换行
-        char *header_end =
-            (char *)memchr(header_start, '\n', end - header_start);
-        if (!header_end)
-          header_end = end; // 最后一行无换行也成立
-
-        // 构造头部字符串： header_start → header_end-1
-        string header(header_start, header_end);
-
-        // 提取真正的染色体名（停在第一个空白）
-        string chr;
-        for (char c : header) {
-          if (isspace((unsigned char)c))
-            break;
-          chr += c;
-        }
-
-        // 得到序列起始位置（下一行）
-        streampos seq_pos = (header_end - data) + 1;
-
-        // 加入表
-        chromosomePos.append(chr, seq_pos);
+    const size_t WINDOW = 8 * 1024 * 1024;
+    const size_t PAGE = (size_t)sysconf(_SC_PAGESIZE);
+    char *releasedUpTo = data;
+    auto releaseBefore = [&](char *upto) {
+      char *b = (char *)((size_t)upto & ~(PAGE - 1));
+      if (b > releasedUpTo) {
+        madvise(releasedUpTo, b - releasedUpTo, MADV_DONTNEED);
+        releasedUpTo = b;
       }
+    };
+    auto findGt = [&](char *from) -> char * {
+      char *q = from;
+      while (q < end) {
+        size_t win = (size_t)(end - q) < WINDOW ? (size_t)(end - q) : WINDOW;
+        char *g = (char *)memchr(q, '>', win);
+        if (g)
+          return g;
+        q += win;
+        releaseBefore(q);
+      }
+      return NULL;
+    };
 
-      // 移动到下一行
-      char *next = (char *)memchr(p, '\n', end - p);
-      if (!next)
-        break;
-      p = next + 1;
-    }*/
+    ofstream fai(refFileName + ".fai");
+
     while (p < end) {
-      char *next = (char *)memchr(p, '\n', end - p);
-      if (!next)
+      char *gt = findGt(p);
+      if (gt == NULL)
         break;
 
-      if (*p == '>') {
-        char *header_start = p + 1;
-        string header(header_start, next); // 直接用 next，不用再找一次
+      if (gt != data && gt[-1] != '\n') {
+        p = gt + 1;
+        continue;
+      }
+      char *nl = (char *)memchr(gt, '\n', end - gt);
+      if (!nl)
+        nl = end;
 
-        string chr;
-        for (char c : header) {
-          if (isspace((unsigned char)c))
-            break;
-          chr += c;
-        }
-        streampos seq_pos = (next - data) + 1;
-        chromosomePos.append(chr, seq_pos);
+      string header(gt + 1, nl);
+      string chr;
+      for (char c : header) {
+        if (isspace((unsigned char)c))
+          break;
+        chr += c;
       }
 
-      p = next + 1;
+      char *lineStart = nl + 1;
+      char *lineEnd = (char *)memchr(lineStart, '\n', end - lineStart);
+      while (lineEnd != NULL && lineEnd == lineStart) {
+        lineStart = lineEnd + 1;
+        lineEnd = (char *)memchr(lineStart, '\n', end - lineStart);
+      }
+      if (lineEnd == NULL)
+        lineEnd = end;
+
+      int raw = (int)(lineEnd - lineStart);
+      int cr = (raw > 0 && lineStart[raw - 1] == '\r') ? 1 : 0;
+      int lb = raw - cr;
+      int lw = raw + 1; // 相邻两行起点的字节距离,自动兼容 LF / CRLF
+
+      char *nextGt = findGt(lineStart);
+      char *limit = nextGt ? nextGt : end;
+
+      if (lb > 0) {
+        streampos off = lineStart - data;
+        // len = 整行数 * lb + 末行碱基数,由字节数 O(1) 推出,无需再扫一遍
+        long long bytes = limit - lineStart;
+        long long rem = bytes % lw;
+        long long tail = rem > 0 ? rem - 1 - cr : 0;
+        if (tail < 0)
+          tail = 0;
+        long long len = (bytes / lw) * lb + tail;
+
+        chromosomePos.append(chr, off, lb, lw);
+        if (fai.good())
+          fai << chr << '\t' << len << '\t' << (long long)off << '\t' << lb
+              << '\t' << lw << '\n';
+      }
+
+      p = limit;
+      releaseBefore(p);
     }
 
+    munmap(data, size);
     chromosomePos.sort();
     chromosome.clear();
-
-    munmap(data, size);
   }
   /**
    * get a fasta line (not header), append the bases to positions.
@@ -613,63 +659,31 @@ public:
     // chromosome = targetChromosome; // 可以去掉，暂时别管
   }
   void startload(long long int spage) {
-    // refCoveredPosition = 2 * loadingBlockSize;
-    refFile.seekg(startPos, ios::beg); // 跳转到该染色体位置
-    // refCoveredPosition = 2 * loadingBlockSize;
+    long long int pageStart = loadingBlockSize * spage;
+    refFile.seekg(chromosomePos.byteOffsetOf(cout_Chromosome, pageStart),
+                  ios::beg);
     string line;
     lastBase = 'X';
-    location = loadingBlockSize * spage;
+    location = pageStart;
 
     int index_group = 0;
-    int CountLine = loadingBlockSize / 60; // 一页里面多少行
-    refFile.seekg(spage * skipSize * CountLine, ios::cur);
+    int CountLine = loadingBlockSize / chromosomePos.lineBasesOf(cout_Chromosome);
     while (refFile.good() && CountLine) {
       getline(refFile, line);
+      if (!line.empty() && line.back() == '\r')
+        line.pop_back();
+      if (line.empty()) {
+        continue;
+      }
       if (line.front() == '>') { // meet next chromosome, return.
         return;
-      } else {
-        if (line.empty()) {
-          continue;
-        }
-
-        // change all base to upper case
-        for (int i = 0; i < line.size(); i++) {
-          line[i] = toupper(line[i]);
-        }
-        appendRefPosition(line, index_group);
-        CountLine--;
       }
-    }
-  }
-
-  /**
-   * load more Position (loadingBlockSize bp) to positions
-   * if we meet next chromosome, return false. Else, return ture.
-   */
-  void loadMore(int CountLine) {
-    // refCoveredPosition += loadingBlockSize;
-    string line;
-    while (refFile.good() && CountLine) {
-      getline(refFile, line);
-      if (line.front() == '>') { // meet next chromosome, return.
-        return;
-      } else {
-        if (line.empty()) {
-          continue;
-        }
-
-        // change all base to upper case
-        for (int i = 0; i < line.size(); i++) {
-          line[i] = toupper(line[i]);
-        }
-        // appendRefPosition(line);
-        CountLine--;
-        //        if (location >=
-        //            refCoveredPosition) { //
-        //            超过了已读取块的总量，return,重新readmore
-        //          return;
-        //        }
+      // change all base to upper case
+      for (int i = 0; i < line.size(); i++) {
+        line[i] = toupper(line[i]);
       }
+      appendRefPosition(line, index_group);
+      CountLine--;
     }
   }
 

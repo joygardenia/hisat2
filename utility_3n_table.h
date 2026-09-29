@@ -326,10 +326,15 @@ class ChromosomeFilePosition {
 public:
   string chromosome;
   streampos linePos;
+  int lineBases; // 每行碱基数(来自 .fai)
+  int lineWidth; // 每行字节数,含换行(来自 .fai)
   // streampos endlinePos;
-  ChromosomeFilePosition(string inputChromosome, streampos inputstartPos) {
+  ChromosomeFilePosition(string inputChromosome, streampos inputstartPos,
+                         int inputLineBases, int inputLineWidth) {
     chromosome = inputChromosome;
     linePos = inputstartPos;
+    lineBases = inputLineBases;
+    lineWidth = inputLineWidth;
     // endlinePos = inputendPos;
   }
 
@@ -348,8 +353,10 @@ public:
   /**
    * input the chromosome name and it's streamPos, if it is not in pos, add it.
    */
-  void append(string &chromosome, streampos &linePos) {
-    pos.push_back(ChromosomeFilePosition(chromosome, linePos));
+  void append(string &chromosome, streampos &linePos, int lineBases,
+              int lineWidth) {
+    pos.push_back(
+        ChromosomeFilePosition(chromosome, linePos, lineBases, lineWidth));
   }
 
   /**
@@ -380,6 +387,22 @@ public:
     int index = findChromosome(targetChromosome, 0, pos.size() - 1);
     assert(pos[index].chromosome == targetChromosome);
     return pos[index].linePos;
+  }
+
+  /**
+   * byte = linePos + (basePos / lineBases) * lineWidth + (basePos % lineBases)
+   */
+  streampos byteOffsetOf(string &targetChromosome, long long int basePos) {
+    int index = findChromosome(targetChromosome, 0, pos.size() - 1);
+    const ChromosomeFilePosition &c = pos[index];
+    streamoff within = (streamoff)((basePos / c.lineBases) * c.lineWidth +
+                                   (basePos % c.lineBases));
+    return c.linePos + within;
+  }
+
+  int lineBasesOf(string &targetChromosome) {
+    int index = findChromosome(targetChromosome, 0, pos.size() - 1);
+    return pos[index].lineBases;
   }
 
   /**
