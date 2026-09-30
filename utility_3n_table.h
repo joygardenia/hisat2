@@ -503,6 +503,7 @@ public:
                           int key) { // 对一个指向 Alignment
                                      // 的指针的引用,只用*无法改变外部
     if (freeDLinkedNodePool.popFront(newDLinkedNode)) {
+      newDLinkedNode->key = key;
       return;
     } else {
       newDLinkedNode = new DLinkedNode(key);

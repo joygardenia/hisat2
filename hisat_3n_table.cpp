@@ -370,6 +370,7 @@ void processSingleNode(Positions *positions,
         positions->returnAlignment(newAlignment);
       }
       positions->_moveAllToprint(outputFileName);
+      positions->LRU.returnDLinkedNode(node);
     }
   }
 }
