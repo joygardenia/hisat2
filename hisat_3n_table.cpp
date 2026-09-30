@@ -293,6 +293,10 @@ void forwardSam(istream *alignmentFile, Positions *positions,
   }
 }
 // 添加代码
+const int linePoolHighWater = 100000;
+
+void processLinePool(Positions *positions);
+
 bool readNewSamChromosome(istream *alignmentFile, Positions *positions,
                           string *&nextline) {
   // 从 SAM
@@ -304,6 +308,11 @@ bool readNewSamChromosome(istream *alignmentFile, Positions *positions,
     positions->chromosome = samChromosome;
   }
   while (alignmentFile->good()) { // 可以安全读取或写入流
+    if (positions->linePool.size() > linePoolHighWater) {
+      // 只排空 linePool。此处不可 popAllNodesFromTail:
+      // 最新页随后仍可能被写入,提前刷出会让同一位点分两次输出。
+      processLinePool(positions);
+    }
     positions->getFreeStringPointer(line);
     if (!getline(*alignmentFile, *line)) {
       positions->returnLine(line);
