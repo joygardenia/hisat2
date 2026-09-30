@@ -412,17 +412,25 @@ public:
 };
 #pragma one
 class Alignment;
+/**
+ * 一个 (页, 读段) 切片: 该读段落在本页的碱基下标区间 [lo, hi)。
+ * 读段对象由它跨越的所有页共享, 切片避免了为每页复制一份读段。
+ */
+struct PageSlice {
+  Alignment *a;
+  int lo;
+  int hi;
+};
 struct DLinkedNode {
   int key;
-  // int value; // 此处用refpositions的类
-  vector<Alignment *> vec; // no 这是一个vector,存放alingment
+  vector<PageSlice> vec; // 本页上的读段切片
   DLinkedNode *prev;
   DLinkedNode *next;
   DLinkedNode(int k = 0)
       : key(k), prev(nullptr), next(nullptr) {
   } // std::vector 自带默认构造函数，不用手动初始化
   void initialize() {
-    vector<Alignment *>().swap(vec);
+    vector<PageSlice>().swap(vec);
     key = 0;
     prev = nullptr;
     next = nullptr;
@@ -460,13 +468,13 @@ public:
     delete head;
     delete tail;
   }
-  void set(int key, Alignment *alignment) {
+  void set(int key, const PageSlice &slice) {
     lock_guard<mutex> lock(mtx);
     if (cache.find(key) == cache.end()) {
       DLinkedNode *newNode;
       getFreeDLinkedNode(newNode, key); // safequeue
       cache[key] = newNode;
-      newNode->vec.emplace_back(alignment);
+      newNode->vec.emplace_back(slice);
       addNode(newNode);
       ++count;
 
@@ -480,7 +488,7 @@ public:
       }
     } else {
       DLinkedNode *node = cache[key];
-      node->vec.emplace_back(alignment);
+      node->vec.emplace_back(slice);
       moveToHead(node);
     }
     return;

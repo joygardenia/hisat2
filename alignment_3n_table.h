@@ -17,6 +17,7 @@
 #ifndef ALIGNMENT_3N_TABLE_H
 #define ALIGNMENT_3N_TABLE_H
 #include "utility_3n_table.h"
+#include <atomic>
 #include <iostream>
 #include <string>
 
@@ -54,18 +55,14 @@ public:
   bool paired;
   int startRefPos;
   int endRefPos;
-  int middleRefPos;
-  bool isFirstPage;
-  long long int front_page;
-  int front_letter;
+  // 该读段仍在外面的页切片数量; 归零才归还对象池。
+  std::atomic<int> pendingPages{0};
 
   void initialize() {
     chromosome.clear();
     location = -1;
     mateLocation = -1;
     flag = -1;
-    middleRefPos = -1;
-    isFirstPage = true;
     mapped = false;
     MD.initialize();
     cigarString.initialize();
@@ -81,6 +78,7 @@ public:
     sequenceCoveredLength = 0;
     overlap = false;
     paired = false;
+    pendingPages.store(0, std::memory_order_relaxed);
   }
   Alignment() { initialize(); };
   /**
@@ -325,37 +323,9 @@ public:
     }
     endRefPos = localMax;
     startRefPos = localMin;
-
-    // 类中的成员
-    front_page = (startRefPos + location) / loadingBlockSize;
-    front_letter = (startRefPos + location) % loadingBlockSize;
-    if (front_letter == 0)
-      front_page--;
-
-    int last_page = (endRefPos + location) / loadingBlockSize;
-    int last_letter = (endRefPos + location) % loadingBlockSize;
-    if (last_letter == 0)
-      last_page--;
-
-    if (front_page != last_page) {
-      long long int last_page_pos = last_page * loadingBlockSize;
-      for (int i = returnPos; i < seqLength; i++) {
-        int ref = bases[i].refPos;
-        if (ref + location > last_page_pos) {
-          middleRefPos = i;
-          break;
-        }
-      }
-      int offset = bases[middleRefPos].refPos; // 以第一个越界的base为基准
-      for (int i = middleRefPos + 1; i < seqLength; i++) {
-        bases[i].refPos -= offset;
-      }
-    }
+    // bases[i].refPos 始终保持“相对 POS 的偏移”, 绝对坐标 = location + refPos。
+    // 分页由调用方按 (绝对坐标 - 1) / loadingBlockSize 统一计算, 此处不再重基化。
     return returnPos;
-  }
-
-  int refLineCount() {
-    return (endRefPos - startRefPos) / loadingBlockSize + 2;
   }
 };
 

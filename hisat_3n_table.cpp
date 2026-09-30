@@ -341,19 +341,46 @@ void processLinePool(Positions *positions) {
     positions->getFreeAlignment(newAlignment);
     bool parsed = newAlignment->parse(line); // 解析
     positions->returnLine(line);
-    if (!parsed) {
+    if (!parsed || !newAlignment->mapped || newAlignment->bases.empty()) {
       positions->returnAlignment(newAlignment);
       continue;
     }
-    positions->LRU.set(newAlignment->front_page, newAlignment);
-    if (newAlignment->middleRefPos != -1) {
-      Alignment *newAlignment_2;
-      positions->getFreeAlignment(newAlignment_2);
-      *newAlignment_2 = *newAlignment;
-      newAlignment_2->isFirstPage = false;
-      newAlignment_2->front_page += 1;
-      positions->LRU.set(newAlignment_2->front_page, newAlignment_2);
+    // 按页把读段的碱基切成若干段(不复制读段对象)。kept 碱基的 refPos 单调不减,
+    // 故同一页对应连续一段; remove 的碱基落在哪一侧都会被跳过。
+    long long loc = newAlignment->location;
+    int nb = (int)newAlignment->bases.size();
+    int nSlices = 0, cur = -1;
+    for (int i = 0; i < nb; ++i) {
+      if (newAlignment->bases[i].remove)
+        continue;
+      int p =
+          (int)((loc + newAlignment->bases[i].refPos - 1) / loadingBlockSize);
+      if (p != cur) {
+        ++nSlices;
+        cur = p;
+      }
     }
+    if (nSlices == 0) { // 所有碱基都被过滤
+      positions->returnAlignment(newAlignment);
+      continue;
+    }
+    // 先登记切片数再入 LRU —— 否则 output 线程可能在计数前就消费掉某片。
+    newAlignment->pendingPages.store(nSlices, std::memory_order_relaxed);
+    cur = -1;
+    int lo = 0;
+    for (int i = 0; i < nb; ++i) {
+      if (newAlignment->bases[i].remove)
+        continue;
+      int p =
+          (int)((loc + newAlignment->bases[i].refPos - 1) / loadingBlockSize);
+      if (p != cur) {
+        if (cur != -1)
+          positions->LRU.set(cur, PageSlice{newAlignment, lo, i});
+        cur = p;
+        lo = i;
+      }
+    }
+    positions->LRU.set(cur, PageSlice{newAlignment, lo, nb});
   }
 }
 // 添加代码
@@ -367,12 +394,14 @@ void processSingleNode(Positions *positions,
   DLinkedNode *node;
   while (working) { // 处理多个节点
     if (positions->LRU.outputPool.popFront(node)) {
-      positions->loadTestChromosome(node->vec.front()->chromosome);
+      positions->loadTestChromosome(node->vec.front().a->chromosome);
       positions->startload(
           node->key); // FIX 加载一页碱基 ,单条染色体全部加载进去了，此处会oom
-      for (Alignment *newAlignment : node->vec) {
-        positions->appendPositions(*newAlignment);
-        positions->returnAlignment(newAlignment);
+      for (const PageSlice &slice : node->vec) {
+        positions->appendPositions(slice, node->key);
+        // 读段可能被多个页共享; 最后一片处理完才归还对象池。
+        if (slice.a->pendingPages.fetch_sub(1, std::memory_order_acq_rel) == 1)
+          positions->returnAlignment(slice.a);
       }
       positions->_moveAllToprint(outputFileName);
       positions->LRU.returnDLinkedNode(node);

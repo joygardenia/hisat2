@@ -509,51 +509,6 @@ public:
     tableFile.close();
   }
 
-  // my masterpiece
-  void deleteRefPos() {
-    for (auto p : refPositions) {
-      delete p; // 释放每个 Position*
-    }
-    refPositions.clear(); // 清空容器
-  }
-  void moveAllToprint(string outputFileName, Alignment &newAlignment) {
-    ostream *out_ = &cout;
-
-    ofstream tableFile;
-    if (!outputFileName.empty()) {
-      tableFile.open(outputFileName, ios_base::out);
-      out_ = &tableFile;
-    }
-    int blockstart = newAlignment.front_letter - 1;
-    int blockend = newAlignment.front_letter + newAlignment.endRefPos -
-                   newAlignment.startRefPos - 1;
-    *out_ << "ref\tpos\tstrand\tconvertedBaseQualities\tconvertedBaseCount\tunc"
-             "onvertedBaseQualities\tunconvertedBaseCount\n";
-    Position *pos;
-    *out_ << "size of refposition : " << refPositions.size() << "\n";
-    *out_ << "blockstart : " << blockstart << "\n";
-    *out_ << "blockend : " << blockend << "\n";
-    *out_ << "newAlignment.front_letter : " << newAlignment.front_letter
-          << "\n";
-    for (int index = blockstart; index <= blockend; index++) {
-      if (refPositions[index]->empty() || refPositions[index]->strand == '?') {
-        continue;
-      } else {
-        vector<uniqueID>().swap(
-            refPositions[index]
-                ->uniqueIDs); // 清空 vector 并释放它占用的堆内存”
-                              // 的高效写法，比 clear() 更彻底。
-        pos = refPositions[index];
-        *out_ << pos->chromosome << '\t' << to_string(pos->location) << '\t'
-              << pos->strand << '\t' << pos->convertedQualities << '\t'
-              << to_string(pos->convertedQualities.size()) << '\t'
-              << pos->unconvertedQualities << '\t'
-              << to_string(pos->unconvertedQualities.size()) << '\n';
-      }
-    }
-    tableFile.close();
-    refPositions.clear();
-  }
   void writeHeader(string outputFileName) {
     if (outputFileName.empty())
       return;
@@ -688,56 +643,32 @@ public:
   }
 
   /**
-   * add position information from Alignment into ref position.
+   * 把该读段落在本页的碱基切片累加进参考位点。
+   * 绝对坐标 X = location + refPos (1-based) -> 本页槽位 slot = X - 1 - page*B。
    */
-  void appendPositions(Alignment &newAlignment) {
-    if (!newAlignment.mapped || newAlignment.bases.empty()) {
+  void appendPositions(const PageSlice &slice, int page) {
+    Alignment &a = *slice.a;
+    if (!a.mapped || a.bases.empty()) {
       return;
     }
-
-    int start = 0;
-    int end = newAlignment.sequence.size();
-    if (newAlignment.middleRefPos != -1) { // 存在分页
-      // FIXME:判断是前面的页面还是后面的页面，修改start end
-      if (newAlignment.isFirstPage) {
-        end = newAlignment.middleRefPos;
-        newAlignment.endRefPos = newAlignment.bases[end].refPos;
-      } else {
-        // startPos =
-        // (newAlignment.bases[newAlignment.middleRefPos].refPos+newAlignment.location)%loadingBlockSize;//在alignment
-        // 的base[i]全部改成以middleRefPos的初始地址为偏移量了
-        newAlignment.location =
-            newAlignment.bases[newAlignment.middleRefPos].refPos +
-            newAlignment.location;
-        newAlignment.bases[newAlignment.middleRefPos].refPos = 0;
-
-        start = newAlignment.middleRefPos;
-        newAlignment.startRefPos = newAlignment.bases[start].refPos;
-      }
-    }
-    int index = getIndex(newAlignment.location);
-    long long int startPos = newAlignment.location; // 1-based position
-    // find the first reference position in pool.
-    for (int i = start; i < end;
-         i++) { //<end 把原来的前面页面的middleRefPos给磨没了
-      PosQuality *b = &newAlignment.bases[i];
+    long long pageStart0 = (long long)page * loadingBlockSize;
+    for (int i = slice.lo; i < slice.hi; i++) {
+      PosQuality *b = &a.bases[i];
       if (b->remove) {
         continue;
       }
-
-      Position *pos = ref + (index + b->refPos);
-      assert(pos->location == startPos + b->refPos);
+      int slot = (int)(a.location + b->refPos - 1 - pageStart0);
+      assert(slot >= 0 && slot < loadingBlockSize);
+      Position *pos = ref + slot;
 
       if (pos->strand == '?') {
         // this is for CG-only mode. read has a 'C' or 'G' but not 'CG'.
         continue;
       }
-      pos->appendBase(
-          newAlignment.bases[i],
-          newAlignment); // 把这条 read
-                         // 对这个位置的观测值（碱基种类、测序质量、甲基化标记等）累积到
-                         // Position 对象里。后续统计如
-                         // coverage、甲基化比例等都是在这些累计信息上进行。
+      pos->appendBase(*b, a); // 把这条 read
+                              // 对这个位置的观测值（碱基种类、测序质量、甲基化标记等）累积到
+                              // Position 对象里。后续统计如 coverage、甲基化比例等都是在这些
+                              // 累计信息上进行。
     }
   }
 
@@ -797,35 +728,6 @@ public:
     newAlignment->initialize();
     //: 写alignment的clear函数,已经写好了
     freeAlignmentPool.push(newAlignment);
-  }
-  /**
-   * this is the working function.
-   * it take the SAM line from linePool, parse it.
-   */
-  void append(int threadID) {
-    string line;
-    Alignment newAlignment;
-
-    //    while (working) {
-    //      {
-    //        std::unique_lock<std::mutex> lock(*workerLock[threadID]);
-    //        // No matching constructor for initialization of
-    //        //
-    //        'std::unique_lock<std::mutex>'------->>>>>>>>>>>没有找到能匹配的构造函数,即构造函数要求传入的是
-    //        // mutex对象的引用，而非一个指针（std::mutex**）
-    //        linecv.wait(lock, [&] { return linePool.popFront(line); });
-    //      }
-    //      {
-    //        std::unique_lock<std::mutex> lock(*workerLock[threadID]);
-    //        refcv.wait(lock, [&] { return !refPositions.empty(); });
-    //        newAlignment.parse(line);
-    //        returnLine(line);
-    //        appendPositions(newAlignment);
-    //      }
-    //    }
-
-    newAlignment.parse(&line);
-    appendPositions(newAlignment);
   }
 };
 
