@@ -330,9 +330,14 @@ bool readNewSamChromosome(istream *alignmentFile, Positions *positions,
 }
 
 // 添加代码
+const int outputPoolHighWater = 20000;
+
 void processLinePool(Positions *positions) {
   Alignment *newAlignment;
   while (positions->linePool.popFront(line)) {
+    while (positions->LRU.outputPool.size() > outputPoolHighWater) {
+      this_thread::sleep_for(std::chrono::microseconds(10));
+    }
     positions->getFreeAlignment(newAlignment);
     bool parsed = newAlignment->parse(line); // 解析
     positions->returnLine(line);
