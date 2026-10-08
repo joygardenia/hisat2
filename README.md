@@ -2,8 +2,9 @@ HISAT-3N
 ============
 
 > **本仓库是 HISAT-3N 的性能优化分支**
-> 将 `hisat-3n-table` 从「全基因组逐碱基扫描」重构为「按页按需加载 + 两阶段 Pipeline」
-> 冷缓存口径加速 **132×**(首次运行,含构建索引)/ **766×**(索引已就绪)
+> 将 `hisat-3n-table` 从「全基因组逐碱基扫描」重构为「按页按需加载 + 多 worker Pipeline + 保序输出」
+> 冷缓存口径加速 **132×**(首次运行,含构建索引)/ **766×**(索引已就绪);
+> 高密度数据(10% 覆盖)下原始 vs 优化加速 **29.8× / 28.4×**(4 / 8 线程)
 > 上游项目:https://github.com/DaehwanKimLab/hisat2 (GPLv3)
 
 ## 本分支做了什么
@@ -32,10 +33,12 @@ while (samPos > reloadPos) {   // SAM 跨越全部染色体,reloadPos 被推着�
 |---|---|---|
 | 按页按需加载 | 按 SAM 命中的 ref 页号直接 `seekg`,取代顺序推进 | 复杂度 O(基因组) → O(命中范围) |
 | 预分配数组 | `ref + (index_group++)` 取代每碱基 `new` + `push_back` | 热路径零堆分配 |
-| 两阶段 Pipeline | Parse/Group 与 Ref-Load/Compute/Output 并行 | IO 与计算重叠 |
+| 多 worker Pipeline | main 解析/分页,k 个 worker 并行 Ref-Load/Compute/Output(页独占) | 输出阶段 4~8 路并行 |
+| 保序 writer | 页节点带单调序号,单 writer 按序落盘(乱序暂存) | 多线程输出与原单线程逐字节一致 |
 | LRU 页缓存 | 以 ref 页号为 key 聚合 read,按染色体边界批量淘汰 | 同页 read 合并 |
 | 三级对象池 | `string` / `Alignment` / `DLinkedNode` 复用 | 消除跨线程分配开销 |
-| Lock-free Queue | 阶段之间无锁传递 | 取代 spin-wait |
+| 线程安全队列 | 阶段之间以互斥锁队列传递(修正原无锁队列的 use-after-free) | 取代 spin-wait、保证正确性 |
+| 去掉位点锁 | 页独占后删除每碱基 `lock/unlock` | 加速逐碱基累加 |
 | 染色体偏移索引 | 扫描结果落盘为 samtools 兼容的 `<ref>.fai`,取代每次运行的全量扫描 | 稳态下 ref 读取 3 GB → 6.4 KB |
 | 有界内存扫描 | 索引构建改为 8 MB 分窗 + `MADV_DONTNEED` | 构建期 maxRSS 3083 MB → 14 MB |
 
@@ -63,6 +66,21 @@ N=1 → 132×,N=3 → 295×,N 增大时渐近 **766×**。
 
 **正确性**:两版本输出均为 3122 行,排序后逐字节一致。
 
+### 多线程性能(高密度)
+
+数据集:GRCh38 上合成的 **10% 覆盖**数据(stride=1000,**2,948,601 条比对**,输出 6,011 万行)。
+口径:governor=performance,每轮 `sync` + `drop_caches` 冷启动,取 2 次中位数。
+
+| 线程 | 原始 | 优化后 | 加速比 | maxRSS |
+|---|---|---|---|---|
+| `-p 4` | 370.58 s | **12.43 s** | **29.8×** | 404 → 306 MB |
+| `-p 8` | 388.71 s | **13.70 s** | **28.4×** | 403 → 296 MB |
+
+- 输出经 `cmp` 校验,原始版与优化版**逐字节一致**。
+- 原版加线程**更慢**(4→8:370.6→388.7 s);优化版 4→8 基本持平(12.4→13.7 s),
+  已达 main 线程(~13.6 s)天花板 —— **4~8 worker 为甜点**。
+- 优化版为**稳态**口径(保留已有 `.fai`,不重建索引)。
+
 ### 测试环境
 
 | 项 | 值 |
@@ -77,9 +95,9 @@ N=1 → 132×,N=3 → 295×,N 增大时渐近 **766×**。
 
 - **首次运行需要构建索引**:约 1.10 s(构建 + 运行),之后每次 0.19 s。
   索引为 samtools 兼容格式,可直接复用 `samtools faidx <ref.fa>` 的产物,无需本程序生成。
-- **`-p/--threads` 暂不生效**:当前实现固定为两阶段 pipeline(main + output)。
-  原版 `-p` 同样收效甚微:其瓶颈在主线程,增加 worker 只会加剧锁竞争
-  (实测原版 `-p 16` 比 `-p 1` 慢 35%)。
+- **`-p/--threads` 生效**:映射为 output worker 数(缺省 1;总线程 = worker + main + writer)。
+  4~8 worker 为甜点,超过后受 main 线程(~13.6 s)与内存带宽限制,收益递减。
+  原版 `-p` 相反:其瓶颈在主线程,增加线程只会加剧锁竞争(实测原版 4→8 线程更慢)。
 
 ### 构建与运行
 
@@ -88,7 +106,7 @@ N=1 → 132×,N=3 → 295×,N 增大时渐近 **766×**。
     git checkout release
     make hisat-3n-table
 
-    ./hisat-3n-table -m \
+    ./hisat-3n-table -m -p 8 \
       --alignments <sorted.sam> \
       --ref <reference.fa> \
       --output-name /dev/stdout \
@@ -101,9 +119,9 @@ N=1 → 132×,N=3 → 295×,N 增大时渐近 **766×**。
 
 | 文件 | 职责 |
 |---|---|
-| `hisat_3n_table.cpp` | `hisat-3n-table` 入口:两阶段 Pipeline 调度 |
-| `position_3n_table.h` | `Positions`:染色体偏移索引(`.fai` 读写)、按页加载 ref、LRU 页缓存、逐位点统计 |
-| `utility_3n_table.h` | `SafeQueue` / `LRUCache` / 三级对象池 |
+| `hisat_3n_table.cpp` | `hisat-3n-table` 入口:N worker + 1 保序 writer 调度、`-p` 映射、`.fai` 初始化 |
+| `position_3n_table.h` | `Positions` / `PageWorker`:染色体偏移索引(`.fai` 读写)、per-worker 按页加载 ref、逐位点统计 |
+| `utility_3n_table.h` | `SafeQueue` / `LRUCache`(页节点序号) / `ChromosomeFilePositions` / 三级对象池 |
 | `alignment_3n_table.h` | SAM 记录解析、`front_page` 页号计算 |
 
 ---
