@@ -255,67 +255,39 @@ public:
   }
 };
 
+/**
+ * 线程安全队列。
+ * 注:原实现为手写无锁队列(Michael-Scott),其 popFront 会 delete 被弹出的头节点,
+ * 在多生产者/多消费者下存在 use-after-free;改为互斥锁实现以保证正确性。
+ */
 template <typename T> class SafeQueue {
-  struct Node {
-    T data;
-    std::atomic<Node *> next;
-    Node(const T &val, Node *n) : data(val) {
-      next.store(n, std::memory_order_relaxed);
-    }
-    Node() : next(nullptr) {} // 用于 dummy 节点
-  };
-  std::atomic<Node *> head, tail;
-  std::atomic<int> queue_size{0};
+  mutex mutex_;
+  queue<T> queue_;
 
 public:
-  SafeQueue() {
-    Node *dummy = new Node;
-    head = tail = dummy;
-  }
-
   void push(T &value) {
-    Node *node = new Node(value, nullptr);
-    Node *old_tail;
-    while (true) {
-      old_tail = tail.load(std::memory_order_acquire);
-      Node *next = old_tail->next.load(std::memory_order_acquire);
-      if (next == nullptr) {
-        if (old_tail->next.compare_exchange_weak(next, node))
-          break;
-      } else {
-        tail.compare_exchange_weak(old_tail, next);
-      }
-    }
-    tail.compare_exchange_weak(old_tail, node);
-    queue_size.fetch_add(1, std::memory_order_relaxed);
+    lock_guard<mutex> lock(mutex_);
+    queue_.push(value);
   }
 
   bool popFront(T &result) {
-    Node *old_head;
-    while (true) {
-      old_head = head.load(std::memory_order_acquire);
-      Node *next = old_head->next.load(std::memory_order_acquire);
-      if (next == nullptr) {
-        // queue_size.fetch_sub(1);   队列为空时错误地减少
-        // size,没有弹出元素，想当然了
-        return false;
-      }
-      if (head.compare_exchange_weak(old_head, next)) {
-        result = next->data;
-        delete old_head;
-        queue_size.fetch_sub(1, std::memory_order_relaxed);
-        return true;
-      }
+    lock_guard<mutex> lock(mutex_);
+    if (queue_.empty()) {
+      return false;
     }
+    result = queue_.front();
+    queue_.pop();
+    return true;
   }
 
-  int size() { return queue_size.load(std::memory_order_acquire); }
+  int size() {
+    lock_guard<mutex> lock(mutex_);
+    return (int)queue_.size();
+  }
 
-  bool
-  empty() { // return head.load() == tail.load();逻辑对，但在无锁情况下，这两个
-            // load 没同步顺序，可能被 CPU 乱序
-    return head.load(std::memory_order_acquire) ==
-           tail.load(std::memory_order_acquire);
+  bool empty() {
+    lock_guard<mutex> lock(mutex_);
+    return queue_.empty();
   }
 };
 
@@ -362,7 +334,7 @@ public:
   /**
    * make binary search on pos for target chromosome name
    */
-  int findChromosome(string &targetChromosome, int start, int end) {
+  int findChromosome(const string &targetChromosome, int start, int end) const {
     if (start <= end) {
       int middle = (start + end) / 2;
       if (pos[middle].chromosome == targetChromosome) {
@@ -381,9 +353,17 @@ public:
   }
 
   /**
+   * 返回匹配到的条目指针(供 per-worker 缓存复用),未命中则抛异常。
+   */
+  const ChromosomeFilePosition *findEntry(const string &targetChromosome) const {
+    int index = findChromosome(targetChromosome, 0, (int)pos.size() - 1);
+    return &pos[index];
+  }
+
+  /**
    * given targetChromosome name, return its streampos
    */
-  streampos getChromosomePosInRefFile(string &targetChromosome) {
+  streampos getChromosomePosInRefFile(const string &targetChromosome) {
     int index = findChromosome(targetChromosome, 0, pos.size() - 1);
     assert(pos[index].chromosome == targetChromosome);
     return pos[index].linePos;
@@ -392,7 +372,7 @@ public:
   /**
    * byte = linePos + (basePos / lineBases) * lineWidth + (basePos % lineBases)
    */
-  streampos byteOffsetOf(string &targetChromosome, long long int basePos) {
+  streampos byteOffsetOf(const string &targetChromosome, long long int basePos) {
     int index = findChromosome(targetChromosome, 0, pos.size() - 1);
     const ChromosomeFilePosition &c = pos[index];
     streamoff within = (streamoff)((basePos / c.lineBases) * c.lineWidth +
@@ -400,7 +380,7 @@ public:
     return c.linePos + within;
   }
 
-  int lineBasesOf(string &targetChromosome) {
+  int lineBasesOf(const string &targetChromosome) {
     int index = findChromosome(targetChromosome, 0, pos.size() - 1);
     return pos[index].lineBases;
   }
@@ -423,6 +403,7 @@ struct PageSlice {
 };
 struct DLinkedNode {
   int key;
+  long long seq = 0;     // 输出序号:入 outputPool 前由 main 单生产者单调分配
   vector<PageSlice> vec; // 本页上的读段切片
   DLinkedNode *prev;
   DLinkedNode *next;
@@ -432,6 +413,7 @@ struct DLinkedNode {
   void initialize() {
     vector<PageSlice>().swap(vec);
     key = 0;
+    seq = 0;
     prev = nullptr;
     next = nullptr;
   }
@@ -445,6 +427,7 @@ private:
   DLinkedNode *head;
   DLinkedNode *tail;
   mutable mutex mtx; // 🔒全局互斥锁
+  long long nextSeq = 0; // 输出序号计数器(仅在 main 持 mtx 时递增)
 
 public:
   SafeQueue<DLinkedNode *> outputPool;
@@ -483,6 +466,7 @@ public:
         cache.erase(tailNode->key);
         // delete tailNode;
         --count;
+        tailNode->seq = nextSeq++; // 入队前编号,复现单线程消费顺序
         outputPool.push(tailNode);
         return; // TODO:有弹出，需要输出,接着回收
       }
@@ -502,6 +486,7 @@ public:
       removeNode(node);
       cache.erase(node->key);
       --count;
+      node->seq = nextSeq++; // 入队前编号,复现单线程消费顺序
       outputPool.push(node);
       node = prev;
     }

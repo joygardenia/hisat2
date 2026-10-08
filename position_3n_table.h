@@ -41,7 +41,6 @@ using namespace std;
 
 extern bool CG_only;
 extern long long int loadingBlockSize;
-extern int skipSize;
 
 /**
  * store unique information for one base information with readID, and the
@@ -66,8 +65,6 @@ public:
  * basic class to store reference position information
  */
 class Position {
-  mutex mutex_;
-
 public:
   string chromosome;         // reference chromosome name
   long long int location;    // 1-based position
@@ -103,7 +100,7 @@ public:
    * set the chromosome, location (position), and strand information.
    */
 
-  void set(string &inputChr, long long int inputLoc) {
+  void set(const string &inputChr, long long int inputLoc) {
     chromosome = inputChr;
     location = inputLoc + 1;
   }
@@ -181,7 +178,6 @@ public:
    * append the SAM information into this position.
    */
   void appendBase(PosQuality &input, Alignment &a) {
-    mutex_.lock();
     if (appendReadNameID(input, a)) {
       if (input.converted) {
         convertedQualities += input.qual;
@@ -189,7 +185,25 @@ public:
         unconvertedQualities += input.qual;
       }
     }
-    mutex_.unlock();
+  }
+};
+
+class PageWorker {
+public:
+  ifstream refFile;
+  vector<Position> page;
+  Position *ref;
+  long long location = 0;
+  char lastBase = 'X';
+  const ChromosomeFilePosition *chrEnt = nullptr;
+  string render;
+
+  PageWorker() : page(loadingBlockSize), ref(nullptr) { ref = page.data(); }
+
+  void bindChromosome(const string &chr, const ChromosomeFilePositions &cpos) {
+    if (chrEnt && chrEnt->chromosome == chr)
+      return;
+    chrEnt = cpos.findEntry(chr);
   }
 };
 
@@ -198,38 +212,12 @@ public:
  */
 class Positions {
 public:
-  vector<Position *>
-      refPositions;       // the pool of all current reference position.
   string chromosome;      // current reference chromosome name.
-  string cout_Chromosome; // cout chromosome name
-  long long int
-      location; // current location (position) in reference chromosome.
-  char lastBase =
-      'X'; // the last base of reference line. this is for CG_only mode.
   SafeQueue<string *> linePool;     // pool to store unprocessed SAM line.
   SafeQueue<string *> freeLinePool; // pool to store free string pointer for SAM
                                     // line.    一行 mode:line
   SafeQueue<Alignment *> freeAlignmentPool; // new
-  streampos startPos;                       // new
-  vector<Position> group1;
-  vector<Position> group2;
-  Position *ref;
   LRUCache LRU;
-  SafeQueue<Position *>
-      freePositionPool; // pool to store free position pointer mode:refPosition
-                        // 一个位置 for reference position.
-  SafeQueue<Position *>
-      outputPositionPool; // pool to store the reference position which is
-                          // 是防止多线程删除出事吗 loaded and ready to output.
-
-  bool working;
-  mutex mutex_;
-  long long int refCoveredPosition; // this is the last position in reference
-                                    // chromosome we loaded in refPositions.
-  ifstream refFile;
-  condition_variable refcv;
-  condition_variable linecv;
-  vector<mutex *> workerLock; // one lock for one worker thread.
   int nThreads = 1;
   ChromosomeFilePositions
       chromosomePos; // store the chromosome name and it's streamPos. To quickly
@@ -238,9 +226,7 @@ public:
   bool removedChrName = false;
 
   Positions(int inputNThreads, bool inputAddedChrName, bool inputRemovedChrName)
-      : group1(6000), group2(6000), LRU(16) {
-    ref = group1.data();
-    working = true;
+      : LRU(16) {
     nThreads = inputNThreads;
     addedChrName = inputAddedChrName;
     removedChrName = inputRemovedChrName;
@@ -255,15 +241,6 @@ public:
       delete newAlignment;
     }
   }
-  /**
-   * given the target Position output the corresponding position index in
-   * refPositions.给定一个目标坐标（targetPos），计算它相对于当前参考片段起点的偏移量（index）
-   */
-  int getIndex(long long int &targetPos) {
-    int firstPos = ref->location;
-    return targetPos - firstPos;
-  }
-
   void LoadChromosomeNamesPos(const string &refFileName) {
     if (!readFaiIfFresh(refFileName)) {
       scanAndBuildFai(refFileName);
@@ -436,20 +413,18 @@ public:
   /**
    * get a fasta line (not header), append the bases to positions.
    */
-  void appendRefPosition(string &line, int &index_group) {
+  void appendRefPosition(PageWorker &w, const string &chr, string &line,
+                         int &index_group) {
     Position *newPos;
     // check the base one by one
     char *b;
     for (int i = 0; i < line.size(); i++) {
-      // getFreePosition(newPos);
-      // newPos = new Position(); // TODO:修改成freepositionpool.popfront
-      newPos = ref + (index_group++);
-      newPos->set(cout_Chromosome,
-                  location + i); // 在执行loadstart时location是固定的位置
+      newPos = w.ref + (index_group++);
+      newPos->set(chr, w.location + i); // 在执行loadstart时location是固定的位置
       b = &line[i];
       if (CG_only) {
-        if (lastBase == 'C' && *b == 'G') {
-          (ref + (index_group - 2))
+        if (w.lastBase == 'C' && *b == 'G') {
+          (w.ref + (index_group - 2))
               ->set('+'); // 修改上一个碱基（刚刚存进去的那个位置）的属性
           newPos->set('-');
         }
@@ -460,171 +435,53 @@ public:
           newPos->set('-');
         }
       }
-      // refPositions.push_back( // 创建2行120个refposition
-      //     newPos); // 把 newPos（一个 Position* 指针）加到 vector 尾部
-      lastBase = *b;
+      w.lastBase = *b;
     }
-    location += line.size(); // ref的块读入位移，不能乱改
+    w.location += line.size(); // ref的块读入位移，不能乱改
   }
 
-  /**
-   * if we can go through all the workerLock, that means no worker is
-   * appending new position.
-   * 有道理但不多，这eee牺牲性能实现正确性，这不该是我做的事情吗
-   */
-  void appendingFinished() {
-    for (int i = 0; i < nThreads; i++) {
-      workerLock[i]->lock();
-      workerLock[i]->unlock();
-    }
-  }
-
-  /**
-   * the output function for output thread.
-   */
-  void outputFunction(string outputFileName) {
-    ostream *out_ = &cout;
-    out_ = &cout;
-    ofstream tableFile;
-    if (!outputFileName.empty()) {
-      tableFile.open(outputFileName, ios_base::out);
-      out_ = &tableFile;
-    }
-
-    *out_ << "ref\tpos\tstrand\tconvertedBaseQualities\tconvertedBaseCount\tunc"
-             "onvertedBaseQualities\tunconvertedBaseCount\n";
-    Position *pos;
-    while (working) {
-      if (outputPositionPool.popFront(pos)) {
-        *out_ << pos->chromosome << '\t' << to_string(pos->location) << '\t'
-              << pos->strand << '\t' << pos->convertedQualities << '\t'
-              << to_string(pos->convertedQualities.size()) << '\t'
-              << pos->unconvertedQualities << '\t'
-              << to_string(pos->unconvertedQualities.size()) << '\n';
-        returnPosition(pos);
-      } else {
-        this_thread::sleep_for(std::chrono::microseconds(1));
-      }
-    }
-    tableFile.close();
-  }
-
-  void writeHeader(string outputFileName) {
-    if (outputFileName.empty())
-      return;
-    ofstream tableFile(outputFileName, ios::out); // 覆盖模式，文件会被清空
-    tableFile
-        << "ref\tpos\tstrand\tconvertedBaseQualities\tconvertedBaseCount\t"
-           "unconvertedBaseQualities\tunconvertedBaseCount\n";
-
-    tableFile.close();
-  }
-
-  void _moveAllToprint(string outputFileName) { //&
-    ostream *out_ = &cout;
-
-    ofstream tableFile;
-    if (!outputFileName.empty()) {
-      tableFile.open(outputFileName, ios::app); // append追加模式
-      out_ = &tableFile;
-    }
+  void _renderPage(PageWorker &w) {
+    w.render.clear();
     int blockstart = 0;
     int blockend = loadingBlockSize - 1;
-    //    int blockstart =
-    //        (newAlignment.location % loadingBlockSize - 1 +
-    //        loadingBlockSize) % loadingBlockSize; //
-    //        原始是front_letter，后一页不方便得到
-    //    int blockend =
-    //        blockstart + newAlignment.endRefPos - newAlignment.startRefPos;
     Position *pos;
-    //*out_ << "size of refposition : " << refPositions.size() << "\n";
-    //*out_ << "blockstart : " << blockstart << "\n";
-    //*out_ << "blockend : " << blockend << "\n";
-    //*out_ << "newAlignment.letter : " << newAlignment.letter << "\n";
     for (int index = blockstart; index <= blockend; index++) {
-      pos = ref + index;
+      pos = w.ref + index;
       if (pos->empty() || pos->strand == '?') {
         continue;
-      } else {
-        // vector<uniqueID>().swap(
-        //     group[index].uniqueIDs); // 清空 vector 并释放它占用的堆内存”
-        //  的高效写法，比 clear() 更彻底。
-
-        *out_ << pos->chromosome << '\t' << to_string(pos->location) << '\t'
-              << pos->strand << '\t' << pos->convertedQualities << '\t'
-              << to_string(pos->convertedQualities.size()) << '\t'
-              << pos->unconvertedQualities << '\t'
-              << to_string(pos->unconvertedQualities.size()) << '\n';
       }
+      w.render += pos->chromosome;
+      w.render += '\t';
+      w.render += to_string(pos->location);
+      w.render += '\t';
+      w.render += pos->strand;
+      w.render += '\t';
+      w.render += pos->convertedQualities;
+      w.render += '\t';
+      w.render += to_string(pos->convertedQualities.size());
+      w.render += '\t';
+      w.render += pos->unconvertedQualities;
+      w.render += '\t';
+      w.render += to_string(pos->unconvertedQualities.size());
+      w.render += '\n';
     }
     for (int i = 0; i < loadingBlockSize; i++)
-      (ref + i)->initialize();
-    tableFile.close();
-    // refPositions.clear();
-  }
-  /**
-   * move the position which position smaller than refCoveredPosition -
-   * loadingBlockSize, output it.
-   */
-  void moveBlockToOutput() {
-    if (refPositions.empty()) {
-      return;
-    }
-    int index;
-    for (index = 0; index < refPositions.size(); index++) {
-      if (refPositions[index]->location <
-          refCoveredPosition - loadingBlockSize) {
-        if (refPositions[index]->empty() ||
-            refPositions[index]->strand == '?') {
-          returnPosition(refPositions[index]);
-        } else {
-          outputPositionPool.push(refPositions[index]);
-        }
-      } else {
-        break;
-      }
-    }
-    if (index != 0) {
-      refPositions.erase(refPositions.begin(), refPositions.begin() + index);
-    }
+      (w.ref + i)->initialize();
   }
 
-  /**
-   * move all the refPosition into output pool.
-   */
-  void moveAllToOutput() {
-    if (refPositions.empty()) {
-      return;
-    }
-    for (int index = 0; index < refPositions.size(); index++) {
-      if (refPositions[index]->empty() || refPositions[index]->strand == '?') {
-        returnPosition(refPositions[index]);
-      } else {
-        vector<uniqueID>().swap(refPositions[index]->uniqueIDs);
-        outputPositionPool.push(refPositions[index]);
-      }
-    }
-    refPositions.clear();
-  }
-
-  void loadTestChromosome(string targetChromosome) {
-    refFile.clear();
-    startPos = chromosomePos.getChromosomePosInRefFile(targetChromosome);
-    cout_Chromosome = targetChromosome;
-    // chromosome = targetChromosome; // 可以去掉，暂时别管
-  }
-  void startload(long long int spage) {
+  void startload(PageWorker &w, const string &chr, long long int spage) {
+    w.bindChromosome(chr, chromosomePos);
     long long int pageStart = loadingBlockSize * spage;
-    refFile.seekg(chromosomePos.byteOffsetOf(cout_Chromosome, pageStart),
-                  ios::beg);
+    w.refFile.clear();
+    w.refFile.seekg(chromosomePos.byteOffsetOf(chr, pageStart), ios::beg);
     string line;
-    lastBase = 'X';
-    location = pageStart;
+    w.lastBase = 'X';
+    w.location = pageStart;
 
     int index_group = 0;
-    int CountLine = loadingBlockSize / chromosomePos.lineBasesOf(cout_Chromosome);
-    while (refFile.good() && CountLine) {
-      getline(refFile, line);
+    int CountLine = loadingBlockSize / chromosomePos.lineBasesOf(chr);
+    while (w.refFile.good() && CountLine) {
+      getline(w.refFile, line);
       if (!line.empty() && line.back() == '\r')
         line.pop_back();
       if (line.empty()) {
@@ -637,7 +494,7 @@ public:
       for (int i = 0; i < line.size(); i++) {
         line[i] = toupper(line[i]);
       }
-      appendRefPosition(line, index_group);
+      appendRefPosition(w, chr, line, index_group);
       CountLine--;
     }
   }
@@ -646,7 +503,7 @@ public:
    * 把该读段落在本页的碱基切片累加进参考位点。
    * 绝对坐标 X = location + refPos (1-based) -> 本页槽位 slot = X - 1 - page*B。
    */
-  void appendPositions(const PageSlice &slice, int page) {
+  void appendPositions(PageWorker &w, const PageSlice &slice, int page) {
     Alignment &a = *slice.a;
     if (!a.mapped || a.bases.empty()) {
       return;
@@ -659,7 +516,7 @@ public:
       }
       int slot = (int)(a.location + b->refPos - 1 - pageStart0);
       assert(slot >= 0 && slot < loadingBlockSize);
-      Position *pos = ref + slot;
+      Position *pos = w.ref + slot;
 
       if (pos->strand == '?') {
         // this is for CG-only mode. read has a 'C' or 'G' but not 'CG'.
@@ -685,34 +542,11 @@ public:
   }
 
   /**
-   * get a Position pointer from freePositionPool, if freePositionPool is
-   * empty, make a new Position pointer.
-   */
-  void getFreePosition(Position *&newPosition) {
-    while (outputPositionPool.size() >= 10000) {
-      this_thread::sleep_for(std::chrono::microseconds(1));
-    }
-    if (freePositionPool.popFront(newPosition)) {
-      return;
-    } else {
-      newPosition = new Position();
-    }
-  }
-
-  /**
    * return the line to freeLinePool
    */
   void returnLine(string *line) {
     line->clear();
     freeLinePool.push(line);
-  }
-
-  /**
-   * return the position to freePositionPool.
-   */
-  void returnPosition(Position *pos) {
-    pos->initialize();
-    freePositionPool.push(pos);
   }
 
   void

@@ -23,6 +23,7 @@
 #include <execinfo.h>
 #include <getopt.h>
 #include <iostream>
+#include <map>
 #include <thread>
 #include <vector>
 using namespace std;
@@ -45,7 +46,6 @@ int nThreads = 1;
 
 // 添加代码
 long long int loadingBlockSize = 6000;
-int skipSize = 61;
 
 bool fileExist(string &filename) {
   ifstream file(filename);
@@ -393,50 +393,119 @@ void processLinePool(Positions *positions) {
   }
 }
 // 添加代码
-bool working = true;
-void processSingleNode(Positions *positions,
-                       string inputRefFileName) { // 输出线程
-  fprintf(stderr, "thread %s tid=%d\n", "output", gettid());
-  positions->refFile.open(inputRefFileName, ios_base::in);
-  positions->LoadChromosomeNamesPos(inputRefFileName);
+
+// 一个渲染结果:整页文本 + 单调序号。done=true 表示某个 worker 已完成。
+struct RenderItem {
+  long long seq = 0;
+  bool done = false;
+  string text;
+};
+
+SafeQueue<RenderItem *> renderQueue;
+const int renderQueueHighWater = 1024;
+
+// 输出 worker:从 outputPool 取页节点,完成 A(页加载)/B(逐碱基累加)/C(整页渲染),
+// 把 (seq, text) 交给 writer;取到哨兵则交付完成信号后退出。
+void workerLoop(Positions *positions, string inputRefFileName) {
+  PageWorker w;
+  w.refFile.open(inputRefFileName, ios_base::in);
 
   DLinkedNode *node;
-  while (working) { // 处理多个节点
-    if (positions->LRU.outputPool.popFront(node)) {
-      positions->loadTestChromosome(node->vec.front().a->chromosome);
-      positions->startload(
-          node->key); // FIX 加载一页碱基 ,单条染色体全部加载进去了，此处会oom
-      for (const PageSlice &slice : node->vec) {
-        positions->appendPositions(slice, node->key);
-        // 读段可能被多个页共享; 最后一片处理完才归还对象池。
-        if (slice.a->pendingPages.fetch_sub(1, std::memory_order_acq_rel) == 1)
-          positions->returnAlignment(slice.a);
+  while (true) {
+    if (!positions->LRU.outputPool.popFront(node)) {
+      this_thread::sleep_for(std::chrono::microseconds(1));
+      continue;
+    }
+    if (node == nullptr) { // 哨兵:交付完成信号后退出
+      RenderItem *done = new RenderItem();
+      done->done = true;
+      renderQueue.push(done);
+      return;
+    }
+    const string &chr = node->vec.front().a->chromosome;
+    positions->startload(w, chr, node->key);
+    for (const PageSlice &slice : node->vec) {
+      positions->appendPositions(w, slice, node->key);
+      // 读段可能被多个页共享; 最后一片处理完才归还对象池。
+      if (slice.a->pendingPages.fetch_sub(1, std::memory_order_acq_rel) == 1)
+        positions->returnAlignment(slice.a);
+    }
+    positions->_renderPage(w);
+    while (renderQueue.size() > renderQueueHighWater) { // 渲染侧背压
+      this_thread::sleep_for(std::chrono::microseconds(10));
+    }
+    RenderItem *item = new RenderItem();
+    item->seq = node->seq;
+    item->text.swap(w.render); // 转移文本,避免拷贝
+    renderQueue.push(item);
+    positions->LRU.returnDLinkedNode(node);
+  }
+}
+
+// writer:独占输出流,按 seq 升序落盘。乱序到达的结果先暂存,缺口补齐后按序写出。
+void writerLoop(Positions *positions, string outputFileName, int nWorkers) {
+  ostream *out_ = &cout;
+  ofstream tableFile;
+  if (!outputFileName.empty()) {
+    tableFile.open(outputFileName, ios_base::out); // 覆盖模式,文件会被清空
+    out_ = &tableFile;
+    // 仅文件输出写表头,stdout 模式与旧版一致不写表头
+    *out_ << "ref\tpos\tstrand\tconvertedBaseQualities\tconvertedBaseCount\t"
+             "unconvertedBaseQualities\tunconvertedBaseCount\n";
+  }
+
+  long long nextToWrite = 0;
+  map<long long, RenderItem *> pending;
+  int doneCount = 0;
+  while (doneCount < nWorkers) {
+    RenderItem *item = nullptr;
+    if (!renderQueue.popFront(item)) {
+      this_thread::sleep_for(std::chrono::microseconds(1));
+      continue;
+    }
+    if (item->done) {
+      ++doneCount;
+      delete item;
+      continue;
+    }
+    if (item->seq == nextToWrite) {
+      *out_ << item->text;
+      delete item;
+      ++nextToWrite;
+      auto it = pending.find(nextToWrite);
+      while (it != pending.end()) { // 冲刷已补齐的乱序暂存
+        *out_ << it->second->text;
+        delete it->second;
+        pending.erase(it);
+        ++nextToWrite;
+        it = pending.find(nextToWrite);
       }
-      positions->_moveAllToprint(outputFileName);
-      positions->LRU.returnDLinkedNode(node);
+    } else {
+      pending[item->seq] = item;
     }
   }
+  tableFile.close();
 }
 
 int hisat_3n_table() {
   fprintf(stderr, "thread %s tid=%d\n", "main", gettid());
   positions = new Positions(nThreads, addedChrName,
                             removedChrName); // 给所有线程？分配一把锁？
-  // main function, initially 2 load loadingBlockSize (2,000,000) bp of
-  // reference, set reloadPos to 1 loadingBlockSize, then load SAM data. when
-  // the samPos larger than the reloadPos load 1 loadingBlockSize bp of
-  // reference. when the samChromosome is different to current chromosome,
-  // finish all sam position and output all.
-  thread outputThread;
-  outputThread = thread(processSingleNode, positions, refFileName);
+  positions->LoadChromosomeNamesPos(refFileName);
+
+  int k = nThreads < 1 ? 1 : nThreads; // worker 数 = -p 值;总线程 = k + main + writer
+  vector<thread> workers;
+  workers.reserve(k);
+  for (int i = 0; i < k; i++)
+    workers.emplace_back(workerLoop, positions, refFileName);
+  thread writerThread(writerLoop, positions, outputFileName, k);
+
   ifstream inputFile;
   istream *alignmentFile = &cin;
 
   string *nextline = nullptr;
   // string *line;                // temporary string to get SAM line.
 
-  long long int reloadPos; // the position in reference that we need to
-                           // reload.反映参考基因组中的物理位置(基因组坐标级别）
   long long int lastPos = 0; // the position on last SAM line. compare lastPos
                              // with samPos to make sure the SAM is sorted.
 
@@ -444,8 +513,6 @@ int hisat_3n_table() {
     inputFile.open(alignmentFileName, ios_base::in);
     alignmentFile = &inputFile;
   }
-  // 添加代码
-  positions->writeHeader(outputFileName);
   forwardSam(alignmentFile, positions, nextline);
   while (readNewSamChromosome(alignmentFile, positions,
                               nextline)) { // read一整个染色体再统一处理
@@ -460,12 +527,18 @@ int hisat_3n_table() {
   if (!standardInMode) {
     inputFile.close();
   }
-  // 收尾
+  // 等所有真实节点被 worker 取走,再每 worker 送一个哨兵
   while (!positions->LRU.outputPool.empty()) {
     this_thread::sleep_for(std::chrono::microseconds(100));
   }
-  working = false;
-  outputThread.join();
+  for (int i = 0; i < k; i++) {
+    DLinkedNode *sentinel = nullptr;
+    positions->LRU.outputPool.push(sentinel);
+  }
+
+  for (auto &t : workers)
+    t.join();
+  writerThread.join();
   delete positions;
   return 0;
 }
